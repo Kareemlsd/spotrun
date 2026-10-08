@@ -34,6 +34,7 @@ class Controller implements vscode.Disposable {
   private readonly panel = new PanelProvider();
   private readonly status: vscode.StatusBarItem;
   private readonly tree: vscode.TreeView<Node>;
+  private readonly modelStatus: vscode.StatusBarItem;
   private readonly chat = new InputChat();
   private readonly lensChanged = new vscode.EventEmitter<void>();
   private readonly disposables: vscode.Disposable[] = [];
@@ -50,6 +51,8 @@ class Controller implements vscode.Disposable {
     this.view = new ReplayView(context);
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
     this.status.command = "spotrun.showPanel";
+    this.modelStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
+    this.modelStatus.command = "spotrun.selectModel";
     this.tree = vscode.window.createTreeView("spotrun.panel", { treeDataProvider: this.panel });
 
     const register = (command: string, handler: (...args: any[]) => unknown) =>
@@ -71,7 +74,7 @@ class Controller implements vscode.Disposable {
     register("spotrun.describe", (uri?: vscode.Uri, qualname?: string) => this.describe(uri, qualname));
     register("spotrun.submitInstruction", (reply: vscode.CommentReply) => this.submitInstruction(reply));
     register("spotrun.clearInstruction", (thread: vscode.CommentThread) => this.clearInstruction(thread));
-    register("spotrun.selectModel", () => this.llm.choose());
+    register("spotrun.selectModel", () => this.selectModel());
     register("spotrun.showLog", () => this.log.show());
     register("spotrun.showPanel", () => this.showPanel());
     register("spotrun.openLocation", (file: string, line: number) => this.openLocation(file, line));
@@ -96,9 +99,37 @@ class Controller implements vscode.Disposable {
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("spotrun")) {
           this.lensChanged.fire();
+          void this.updateModelStatus();
         }
       }),
+      this.modelStatus,
+      vscode.window.onDidChangeActiveTextEditor(() => void this.updateModelStatus()),
+      vscode.lm?.onDidChangeChatModels?.(() => void this.updateModelStatus()) ?? new vscode.Disposable(() => undefined),
     );
+    void this.updateModelStatus();
+  }
+
+  /** The model in use, shown while a Python file is active. Click to change it. */
+  private async updateModelStatus(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== "python") {
+      this.modelStatus.hide();
+      return;
+    }
+    const label = await this.llm.label();
+    this.modelStatus.text = `$(sparkle) Spot Run: ${label}`;
+    this.modelStatus.tooltip = "Language model Spot Run uses to invent inputs and fake values. Click to choose another.";
+    this.modelStatus.show();
+  }
+
+  private async selectModel(): Promise<void> {
+    const changed = await this.llm.choose();
+    await this.updateModelStatus();
+    const current = this.current;
+    if (changed && current) {
+      // Show what the newly chosen model produces for the function on screen.
+      await this.guarded(() => this.run(current.target, true));
+    }
   }
 
   dispose(): void {

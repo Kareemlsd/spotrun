@@ -32,6 +32,10 @@ Generated arguments are remembered per function and reused until the signature c
 
 Without a model (no Copilot, consent declined, `spotrun.useLanguageModel` off) the runtime falls back to values derived from type hints and parameter names, and to fakes for everything else. The tool stays usable, the data is just less realistic.
 
+### Choosing the model
+
+While a Python file is open, the status bar shows the model in use, for example `Spot Run: GPT-4o mini`. Click it, or run **Spot Run: Select Language Model**, to pick from the models VS Code currently offers (GitHub Copilot's and any other registered provider's), or choose Automatic or None. The choice is stored in your user settings. If a replay is showing, the function runs again with fresh inputs from the new model.
+
 ### Describing the inputs
 
 Click **Describe inputs** above a function that has been run, or press `Ctrl+Alt+Shift+Enter` (`Cmd+Alt+Shift+Enter`) in any function. A small conversation opens under the `def` line. Say what the data should look like, for example "one negative price and no tax" or "the API answers 404", and the function runs with inputs built to that description. Follow-ups refine the previous inputs ("make it three prices"). The description steers the fake values as well as the arguments, is remembered for the function, and is used again by **New inputs**. The action in the conversation's title bar clears it. Pinned values still win. This needs a language model.
@@ -76,7 +80,7 @@ The **Spot Run** section in the Explorer sidebar (click the status bar entry to 
 | Setting | Default | |
 | --- | --- | --- |
 | `spotrun.useLanguageModel` | `true` | Use a model for inputs and fake values |
-| `spotrun.model` | `6-luna` | Model family, id or name, matched ignoring case and punctuation. Falls back to the smallest fast model, Copilot first, when it is not available |
+| `spotrun.model` | `""` | Model family, id or name. Empty picks the smallest fast model, Copilot first. Set it from the status bar |
 | `spotrun.pythonPath` | `""` | Interpreter. Empty uses the Python extension's selection |
 | `spotrun.scope` | `workspace` | What is recorded for stepping into: `workspace`, `file` or `function` |
 | `spotrun.startAt` | `first` | Start the replay on the first line or at the end |

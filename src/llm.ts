@@ -24,7 +24,7 @@ export class LanguageModel {
   }
 
   private preference(): string {
-    return vscode.workspace.getConfiguration("spotrun").get<string>("model", "6-luna").trim();
+    return vscode.workspace.getConfiguration("spotrun").get<string>("model", "").trim();
   }
 
   enabled(): boolean {
@@ -122,23 +122,54 @@ export class LanguageModel {
     }
   }
 
-  async choose(): Promise<void> {
+  /** Lets the user pick the model. Returns true when the choice changed. */
+  async choose(): Promise<boolean> {
     const models = await this.available();
-    type Item = vscode.QuickPickItem & { value: string };
+    const preference = this.preference();
+    const active = await this.pick();
+    type Item = vscode.QuickPickItem & { value: string; real?: boolean };
+    const mark = (selected: boolean) => (selected ? "$(check) " : "");
     const items: Item[] = [
-      { label: "Automatic", description: "smallest fast model available, GitHub Copilot first", value: "" },
-      { label: "None", description: "built-in sample values only, no model requests", value: NO_MODEL },
-      { label: "", kind: vscode.QuickPickItemKind.Separator, value: "" },
-      ...models.map((m) => ({ label: m.name, description: `${m.vendor} · ${m.family}`, detail: m.id, value: m.id })),
+      {
+        label: `${mark(preference === "")}Automatic`,
+        description: "smallest fast model available, GitHub Copilot first" + (preference === "" && active ? ` (now ${active.name})` : ""),
+        value: "",
+        real: true,
+      },
+      { label: `${mark(preference.toLowerCase() === NO_MODEL)}None`, description: "built-in sample values only, no model requests", value: NO_MODEL, real: true },
+      { label: "Available models", kind: vscode.QuickPickItemKind.Separator, value: "" },
+      ...models.map((m) => ({
+        label: `${mark(preference !== "" && active?.id === m.id)}${m.name}`,
+        description: `${m.vendor} · ${m.family}`,
+        detail: m.id,
+        value: m.id,
+        real: true,
+      })),
     ];
     if (models.length === 0) {
       items.push({ label: "No language models found", description: "sign in to GitHub Copilot or install a model provider", value: "" });
     }
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Model used to invent inputs and fake values" });
-    if (!picked) {
-      return;
+    const picked = await vscode.window.showQuickPick(items, {
+      title: "Spot Run: language model",
+      placeHolder: "Model used to invent inputs and fake values",
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked || !picked.real || picked.value === preference) {
+      return false;
     }
     await vscode.workspace.getConfiguration("spotrun").update("model", picked.value, vscode.ConfigurationTarget.Global);
     this.cached = undefined;
+    this.cachedFor = undefined;
+    return true;
+  }
+
+  /** Short label of the model in use, for the status bar. */
+  async label(): Promise<string> {
+    if (!this.enabled()) {
+      return "no model";
+    }
+    const model = await this.pick();
+    return model ? model.name : "no model available";
   }
 }

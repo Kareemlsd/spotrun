@@ -331,6 +331,35 @@ try {
     await open("pure.py", 21);
   }
 
+  // ---- 8c. choosing the model from the status bar
+  if (withModel) {
+    const modelItem = page.locator(".statusbar-item", { hasText: "Spot Run:" }).first();
+    check("status bar shows the model in use", (await modelItem.textContent()).includes("Fake Mini"), await modelItem.textContent());
+    const pick = async (label) => {
+      await modelItem.click();
+      await page.waitForSelector(".quick-input-widget:not([style*='display: none']) input", { timeout: 10000 });
+      await shot(`16-model-picker-${label.toLowerCase()}`);
+      await page.keyboard.type(label, { delay: 5 });
+      await page.waitForTimeout(400);
+      await page.keyboard.press("Enter");
+    };
+    await palette("Spot Run: Run Function at Cursor");
+    await waitForReplay("total");
+    const promptCount = () => fs.readFileSync(lmLog, "utf8").split("=== PROMPT ===").length;
+    const promptsBefore = promptCount();
+    await pick("None");
+    await page.waitForFunction(() => [...document.querySelectorAll(".statusbar-item")].some((e) => e.textContent.includes("Spot Run: no model")), null, { timeout: 20000 });
+    await page.waitForTimeout(2500);
+    // Built-in values for total are [1.5, 1.5] with the default tax, which gives 3.6.
+    check("choosing None reruns with built-in values", /total · 1\/\d+ · → 3\.6/.test(await statusText()), await statusText());
+    check("no model request is made with None", promptCount() === promptsBefore);
+    await pick("Fake Mini");
+    await page.waitForFunction(() => [...document.querySelectorAll(".statusbar-item")].some((e) => e.textContent.includes("Spot Run: Fake Mini")), null, { timeout: 20000 });
+    await page.waitForTimeout(2500);
+    check("choosing a model reruns and asks that model", promptCount() > promptsBefore && /total · /.test(await statusText()), await statusText());
+    await shot("17-model-chosen");
+  }
+
   // ---- 9. editing ends the replay
   await page.keyboard.press("Control+1");
   await page.waitForTimeout(300);
