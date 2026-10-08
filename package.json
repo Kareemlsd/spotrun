@@ -354,7 +354,7 @@
     "test:unit": "tsc -p tsconfig.test.json && node --test out/test/core.test.js",
     "test:python": "python3 -m pytest tests -q",
     "test": "npm run typecheck && npm run test:unit && npm run test:python",
-    "package": "npm run build -- --production && vsce package --no-dependencies --skip-license",
+    "package": "npm run build -- --production && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build -- --production",
     "test:e2e": "node e2e/run.mjs"
   },
@@ -364,5 +364,6 @@
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.24.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "license": "MIT"
 }
