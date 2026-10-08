@@ -35,6 +35,7 @@ class EffectBlocked(BaseException):
 
 class _State(object):
     armed = False
+    importing = False
     bypass = 0
     blocked = []
     effects = []
@@ -936,7 +937,7 @@ def _patch_environ():
         value = lookup(self, key)
         if value is not missing:
             return value
-        if not STATE.armed or STATE.bypass or self is not os.environ:
+        if not (STATE.armed or STATE.importing) or STATE.bypass or self is not os.environ:
             raise KeyError(key)
         text = "os.environ[%s]" % short(key)
         record_effect("faked", text)

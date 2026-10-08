@@ -2,7 +2,7 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "kareemlsd",
   "private": true,
   "repository": {

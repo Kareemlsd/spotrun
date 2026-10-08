@@ -36,54 +36,157 @@ class Fatal(Exception):
 # --------------------------------------------------------------------------
 
 
+def _ancestors(directory, root):
+    """Directories from ``directory`` up to and including ``root``."""
+    out = []
+    current = directory
+    while True:
+        out.append(current)
+        parent = os.path.dirname(current)
+        if os.path.normcase(current) == os.path.normcase(root) or parent == current:
+            break
+        if not os.path.normcase(current).startswith(os.path.normcase(root)):
+            break
+        current = parent
+    return out
+
+
+def _is_about(exc, names):
+    """True when an ImportError says one of ``names`` itself is missing."""
+    missing = getattr(exc, "name", None)
+    return missing is not None and any(missing == n or n.startswith(missing + ".") for n in names)
+
+
 def import_target(file, root):
+    """Import the module that defines the function.
+
+    Projects are laid out in many ways, so several module names are tried:
+    the regular package the file belongs to, then the file as part of a
+    package without __init__.py seen from each folder between it and the
+    workspace root. When the module's own imports name a top-level package
+    that lives in one of those folders (a source root such as ``backend/``),
+    that folder is added to the import path and the import repeated.
+    """
     file = os.path.abspath(file)
+    root = os.path.abspath(root) if root else os.path.dirname(file)
     directory = os.path.dirname(file)
     stem = os.path.splitext(os.path.basename(file))[0]
+    is_init = stem == "__init__"
+
     parts = [stem]
     top = directory
     while os.path.isfile(os.path.join(top, "__init__.py")) and os.path.dirname(top) != top:
         parts.insert(0, os.path.basename(top))
         top = os.path.dirname(top)
-    if stem == "__init__" and len(parts) > 1:
+    if is_init and len(parts) > 1:
         parts.pop()
-    search = [top]
-    if root:
-        search.append(os.path.abspath(root))
-        source_dir = os.path.join(os.path.abspath(root), "src")
-        if os.path.isdir(source_dir):
-            search.append(source_dir)
-    for entry in reversed(search):
+
+    ancestors = _ancestors(directory, root)
+    candidates = [(top, ".".join(parts))]
+    for base in ancestors:
+        relative = os.path.relpath(file, base)
+        pieces = os.path.splitext(relative)[0].split(os.sep)
+        if is_init and len(pieces) > 1:
+            pieces.pop()
+        if all(p.isidentifier() for p in pieces) and (base, ".".join(pieces)) not in candidates:
+            candidates.append((base, ".".join(pieces)))
+
+    def put_first(entry):
         if entry in sys.path:
             sys.path.remove(entry)
         sys.path.insert(0, entry)
 
-    name = ".".join(parts)
-    module = None
-    try:
-        module = importlib.import_module(name)
-    except ImportError as exc:
-        if getattr(exc, "name", None) not in (name, parts[0]):
-            raise
-    if module is not None:
+    source_dir = os.path.join(root, "src")
+    for entry in ([source_dir] if os.path.isdir(source_dir) else []) + [root]:
+        put_first(entry)
+
+    def is_target(module):
         found = getattr(module, "__file__", None)
         try:
-            if found and os.path.samefile(found, file):
-                return module
+            return bool(found) and os.path.samefile(found, file)
         except OSError:
-            pass
-        sys.modules.pop(name, None)
+            return False
 
-    # The dotted name resolved to something else (name clash with an
-    # installed package) or could not be imported: load straight from the path.
+    def forget(name):
+        prefix = name.split(".")[0]
+        for loaded in [m for m in sys.modules if m == prefix or m.startswith(prefix + ".")]:
+            module = sys.modules.get(loaded)
+            origin = getattr(module, "__file__", None) or ""
+            if not origin or os.path.normcase(os.path.abspath(origin)).startswith(os.path.normcase(root)):
+                sys.modules.pop(loaded, None)
+
+    added = set()
+    first_error = None
+    for base, name in candidates:
+        put_first(base)
+        for _attempt in range(6):
+            try:
+                module = importlib.import_module(name)
+            except ImportError as exc:
+                forget(name)
+                if _is_about(exc, [name]) or "relative import" in str(exc):
+                    # This spelling of the module name does not fit; try the next.
+                    first_error = first_error or exc
+                    break
+                missing = (getattr(exc, "name", None) or "").split(".")[0]
+                home = None
+                if missing:
+                    for folder in ancestors:
+                        if folder not in added and (
+                            os.path.isdir(os.path.join(folder, missing)) or os.path.isfile(os.path.join(folder, missing + ".py"))
+                        ):
+                            home = folder
+                            break
+                if home is None:
+                    raise
+                # A sibling top-level package: its folder is a source root.
+                added.add(home)
+                put_first(home)
+                put_first(base)
+                continue
+            if is_target(module):
+                return module
+            forget(name)
+            break
+
+    # No dotted name fits (for example a name clash with an installed
+    # package): load straight from the path.
+    put_first(directory)
     unique = stem if stem not in sys.modules else "spotrun_target_%s" % stem
     spec = importlib.util.spec_from_file_location(unique, file)
     if spec is None or spec.loader is None:
         raise Fatal("Cannot load %s as a Python module." % file)
     module = importlib.util.module_from_spec(spec)
     sys.modules[unique] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except ImportError as exc:
+        sys.modules.pop(unique, None)
+        if "relative import" in str(exc) and first_error is not None:
+            raise first_error
+        raise
     return module
+
+
+def explain_import_failure(file, exc):
+    """First line says what went wrong and what to do; the traceback follows."""
+    name = os.path.basename(file)
+    summary = "%s: %s" % (type(exc).__name__, exc)
+    if isinstance(exc, ModuleNotFoundError):
+        hint = (
+            "The interpreter Spot Run used (%s) cannot find that module. If it is a package you installed, "
+            "Spot Run is probably using a different interpreter than your project: select the right one in the "
+            "Python extension or set spotrun.pythonPath. If it is your own code, its folder is not on the import path."
+            % sys.executable
+        )
+    elif isinstance(exc, ImportError):
+        hint = "An import inside the file failed (interpreter: %s). A circular import shows up here when the file is normally imported through another module first." % sys.executable
+    elif isinstance(exc, guard.EffectBlocked):
+        hint = "The file does this at module level, while it is being imported, so it happens before any function can run."
+    else:
+        hint = "The file raised this at module level, while it was being imported, before any function could run. Code that runs on import (reading config, connecting, parsing arguments) has to succeed first."
+    trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-12:])
+    return "Importing %s failed: %s\n\n%s\n\n%s" % (name, summary, hint, trace)
 
 
 def find_target(module, qualname):
@@ -547,6 +650,9 @@ def run(request, channel):
     Hooks.eager = resolver.eager
     Hooks.report = resolver.report
 
+    # While the module is imported, a required environment variable that is
+    # not set gets an invented value, as it would inside the function.
+    guard.STATE.importing = True
     try:
         module = import_target(file, root)
     except Fatal:
@@ -554,7 +660,9 @@ def run(request, channel):
     except BaseException as exc:
         if isinstance(exc, (KeyboardInterrupt,)):
             raise
-        raise Fatal("Importing %s failed.\n\n%s" % (os.path.basename(file), "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-12:])))
+        raise Fatal(explain_import_failure(file, exc))
+    finally:
+        guard.STATE.importing = False
 
     function, cls, needs_self, raw = find_target(module, request["qualname"])
     namespace = build_namespace(module)

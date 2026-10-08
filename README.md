@@ -71,6 +71,16 @@ The **Spot Run** section in the Explorer sidebar (click the status bar entry to 
 
 **Open This Run in the Debugger** starts a real `debugpy` session on the same function with the same inputs and cached fake values, stopped at the first line.
 
+## When importing the file fails
+
+The function is imported from its file before it can run, so anything that goes wrong at module level stops the run with "Importing x.py failed: ..." and the reason on the same line. The usual causes:
+
+- **A package is not found.** Spot Run is using a different interpreter than your project. Select the interpreter in the Python extension or set `spotrun.pythonPath`. The message names the interpreter that was used.
+- **The file does real work on import**, such as reading a config file, parsing command-line arguments or connecting to something. That code has to succeed first. A missing required environment variable is given an invented value.
+- **A circular import** that only works when the file is reached through another module.
+
+Layouts that are handled automatically: regular packages, packages without `__init__.py` that use relative imports, a `src/` folder, and source roots below the workspace folder (a file in `backend/app/` that says `from app.x import y`).
+
 ## Limits you should know
 
 - Fakes return plausible data, not true data. This shows how your logic behaves on reasonable inputs. It does not tell you whether a query is correct against the real schema.

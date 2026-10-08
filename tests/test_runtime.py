@@ -429,3 +429,33 @@ def test_only_import_statements_are_accepted():
     assert not os.path.exists(marker)
     assert len(r["import_errors"]) == 2
     assert "only import statements" in r["import_errors"][0] and "no_such_module_xyz" in r["import_errors"][1]
+
+
+# ---------------------------------------------------------- project layouts
+
+
+def test_package_without_init_files_supports_relative_imports():
+    r = spot(os.path.join("layouts", "ns", "sub", "mod.py"), "f")
+    assert r.get("fatal") is None, r.get("fatal")
+    assert r["return"] == "6"
+
+
+def test_source_root_below_the_workspace_is_found():
+    # backend/ is the import root: the file says "from app.helpers import ...".
+    r = spot(os.path.join("layouts", "backend", "app", "core.py"), "g")
+    assert r.get("fatal") is None, r.get("fatal")
+    assert r["return"] == "6"
+    assert len(r["frames"]) == 2, "the helper in the sibling module is recorded too"
+
+
+def test_required_env_var_read_at_import_is_invented():
+    r = spot(os.path.join("layouts", "cfg", "settings.py"), "h")
+    assert r.get("fatal") is None, r.get("fatal")
+    assert r["return"] == "('<SPOTRUN_NOT_SET_KEY>', 3)"
+
+
+def test_missing_dependency_is_explained_with_the_interpreter():
+    r = spot(os.path.join("layouts", "missing.py"), "k")
+    first = r["fatal"].splitlines()[0]
+    assert first == "Importing missing.py failed: ModuleNotFoundError: No module named 'not_installed_pkg_xyz'"
+    assert sys.executable in r["fatal"] and "spotrun.pythonPath" in r["fatal"]
