@@ -82,6 +82,11 @@ export class LanguageModel {
 
   /** Sends one prompt and returns the full reply, or undefined when the model cannot be used. */
   async ask(prompt: string, token: vscode.CancellationToken, timeoutMs = 30000): Promise<string | undefined> {
+    return this.converse([{ role: "user", text: prompt }], token, timeoutMs);
+  }
+
+  /** Sends a conversation and returns the model's next reply. */
+  async converse(messages: { role: "user" | "assistant"; text: string }[], token: vscode.CancellationToken, timeoutMs = 45000): Promise<string | undefined> {
     const model = await this.pick();
     if (!model) {
       return undefined;
@@ -91,7 +96,7 @@ export class LanguageModel {
     const timer = setTimeout(() => source.cancel(), timeoutMs);
     try {
       const response = await model.sendRequest(
-        [vscode.LanguageModelChatMessage.User(prompt)],
+        messages.map((m) => (m.role === "user" ? vscode.LanguageModelChatMessage.User(m.text) : vscode.LanguageModelChatMessage.Assistant(m.text))),
         { justification: "Spot Run asks the model for sample inputs so it can run your function without touching real systems." },
         source.token,
       );

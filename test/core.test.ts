@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { buildArgsPrompt, buildContext, buildValuePrompt, extractJson, parseArgsReply, parseValueReply, toPythonLiteral } from "../src/core/prompts";
 import { findByQualname, functionAt, parsePythonFunctions, signatureOf, sourceOf } from "../src/core/pythonFunctions";
 import { formatWrites, ReplayModel } from "../src/core/replayModel";
+import { createFsHost, dig, parseDigReply, runLookup } from "../src/core/dig";
 import { Handlers } from "../src/core/runtimeProcess";
 import { absorb, runWithRetries, RunSpec } from "../src/core/session";
 import { emptyFunctionData, RunResult } from "../src/core/types";
@@ -310,7 +311,7 @@ test("runtime: model answers are asked once, cached, and reused", async () => {
   const handlers: Handlers = {
     needArgs: async () => {
       asked.push("args");
-      return { base_url: "'https://shop.test'", min_price: "10" };
+      return { args: { base_url: "'https://shop.test'", min_price: "10" } };
     },
     needValue: async (need) => {
       asked.push(need.path);
@@ -396,4 +397,119 @@ test("a described scenario is carried into both prompts", () => {
     instructions: ["the API answers 404"],
   });
   assert.match(value, /"""the API answers 404"""/);
+});
+
+// ----------------------------------------------------------------- dig deep
+
+function tempWorkspace(): string {
+  const fsn = require("node:fs") as typeof import("node:fs");
+  const dir = fsn.mkdtempSync(path.join(require("node:os").tmpdir(), "spotrun-dig-"));
+  for (const name of ["deep.py", "deep_models.py", "deep_caller.py"]) {
+    fsn.copyFileSync(path.join(SAMPLES, name), path.join(dir, name));
+  }
+  fsn.mkdirSync(path.join(dir, "node_modules", "pkg"), { recursive: true });
+  fsn.writeFileSync(path.join(dir, "node_modules", "pkg", "settle.py"), "settle(1)\n");
+  fsn.mkdirSync(path.join(dir, ".git"));
+  fsn.writeFileSync(path.join(dir, ".git", "config.py"), "settle(2)\n");
+  fsn.writeFileSync(path.join(dir, ".env"), "API_KEY=topsecret\n");
+  fsn.writeFileSync(path.join(dir, "secrets.json"), '{"password": "hunter2"}\n');
+  fsn.writeFileSync(path.join(dir, "config.yaml"), "rates:\n  EUR: 1.0\n");
+  return dir;
+}
+
+test("dig: lookups read the workspace but not dependencies, hidden folders or secrets", async () => {
+  const dir = tempWorkspace();
+  const host = createFsHost(dir);
+  assert.deepEqual(await host.listFiles(), ["config.yaml", "deep.py", "deep_caller.py", "deep_models.py"]);
+  assert.equal(await host.readFile(".env"), undefined);
+  assert.equal(await host.readFile("secrets.json"), undefined);
+  assert.equal(await host.readFile("../outside.py"), undefined);
+  assert.equal(await host.readFile("/etc/passwd"), undefined);
+  assert.equal(await host.readFile("node_modules/pkg/settle.py"), undefined);
+
+  const usages = await runLookup(host, { action: "usages", name: "settle" });
+  assert.equal(usages.label, "usages settle");
+  assert.match(usages.text, /# deep_caller\.py:12/);
+  assert.match(usages.text, /"kind": "invoice"/);
+  assert.doesNotMatch(usages.text, /node_modules|\.git/);
+
+  const definition = await runLookup(host, { action: "definition", name: "Policy" });
+  assert.match(definition.text, /# deep_models\.py:\d+\n@dataclass\nclass Policy:\n {4}allowed: tuple/);
+  assert.match((await runLookup(host, { action: "definition", name: "rate" })).text, /def rate\(self, currency\)/);
+
+  const search = await runLookup(host, { action: "search", query: "EUR" });
+  assert.match(search.text, /config\.yaml:2/);
+  assert.doesNotMatch(search.text, /topsecret|hunter2/);
+  assert.match((await runLookup(host, { action: "search", query: "Ledger(" })).text, /deep_caller\.py:6/, "an invalid regex is treated as literal text");
+
+  const read = await runLookup(host, { action: "read", file: "deep_models.py", start: 4, end: 6 });
+  assert.equal(read.label, "read deep_models.py:4-6");
+  assert.match(read.text, / {3}4 {2}class Ledger:/);
+  assert.match((await runLookup(host, { action: "read", file: ".env" })).text, /Cannot read/);
+  assert.match((await runLookup(host, { action: "list" })).text, /deep_models\.py/);
+  assert.match((await runLookup(host, { action: "delete", file: "deep.py" })).text, /Unknown action/);
+});
+
+test("dig: replies are told apart", () => {
+  assert.deepEqual(parseDigReply('```json\n{"action": "search", "query": "x"}\n```'), { kind: "action", action: { action: "search", query: "x" } });
+  assert.deepEqual(parseDigReply('{"args": {"a": 1, "b": "[1]"}, "imports": ["from m import T", 3], "notes": "n"}'), {
+    kind: "final",
+    answer: { args: { a: "1", b: "[1]" }, imports: ["from m import T"], notes: "n" },
+  });
+  assert.equal(parseDigReply("let me think"), undefined);
+});
+
+test("dig: the loop feeds results back, respects the budget and ends on the final answer", async () => {
+  const host = createFsHost(tempWorkspace());
+  const seen: string[] = [];
+  const script = ['{"action": "usages", "name": "settle"}', "not json at all", '{"action": "definition", "name": "Ledger"}', '{"action": "list"}', '{"args": {"policy": "Policy(allowed=(\'invoice\',))"}, "imports": ["from deep_models import Policy"], "notes": "entries are dicts"}'];
+  const steps: string[] = [];
+  const outcome = await dig({
+    host,
+    prompt: "BASE PROMPT",
+    maxSteps: 2,
+    send: async (messages) => {
+      seen.push(messages[messages.length - 1].text);
+      return script.shift();
+    },
+    onStep: (step, label) => steps.push(`${step} ${label}`),
+  });
+  assert.match(seen[0], /^BASE PROMPT\n[^]*DIG DEEP IS ON[^]*up to 2 lookups/);
+  assert.match(seen[1], /deep_caller\.py:12[^]*1 lookup left/);
+  assert.match(seen[2], /not a single JSON object/);
+  assert.match(seen[3], /class Ledger[^]*That was the last lookup/);
+  assert.match(seen[4], /No lookups left/, "a lookup past the budget is refused, not run");
+  assert.deepEqual(steps, ["1 usages settle", "2 definition Ledger"]);
+  assert.deepEqual(outcome, {
+    args: { policy: "Policy(allowed=('invoice',))" },
+    imports: ["from deep_models import Policy"],
+    notes: "entries are dicts",
+    lookups: ["usages settle", "definition Ledger"],
+  });
+});
+
+test("dig: gives up when the model keeps answering without JSON or stops answering", async () => {
+  const host = createFsHost(tempWorkspace());
+  assert.equal(await dig({ host, prompt: "p", maxSteps: 3, send: async () => "no" }), undefined);
+  assert.equal(await dig({ host, prompt: "p", maxSteps: 3, send: async () => undefined }), undefined);
+  assert.equal(await dig({ host, prompt: "p", maxSteps: 1, send: async () => '{"action": "list"}' }), undefined, "never answering ends after the budget");
+});
+
+test("runtime: dug-up arguments with imports run and are remembered", async () => {
+  const handlers: Handlers = {
+    needArgs: async () => ({
+      args: {
+        ledger: "Ledger({'EUR': 1.0, 'USD': 0.9})",
+        entries: "[{'ref': 'A-1', 'kind': 'invoice', 'amount': 100.0, 'currency': 'USD'}]",
+        policy: "Policy(allowed=('invoice',))",
+      },
+      imports: ["from deep_models import Ledger, Policy"],
+    }),
+    needValue: async () => undefined,
+  };
+  const first = await runWithRetries(spec("deep.py", "settle", true), emptyFunctionData(""), handlers, options);
+  assert.equal(first.result.return, "(90.0, [])");
+  assert.deepEqual(first.data.imports, ["from deep_models import Ledger, Policy"]);
+  const second = await runWithRetries(spec("deep.py", "settle", true), first.data, { ...handlers, needArgs: async () => assert.fail("asked again") }, options);
+  assert.equal(second.result.return, "(90.0, [])");
 });

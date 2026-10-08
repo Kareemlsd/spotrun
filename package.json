@@ -2,7 +2,7 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "kareemlsd",
   "private": true,
   "repository": {
@@ -135,6 +135,12 @@
         "title": "Clear Description and Close",
         "category": "Spot Run",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "spotrun.digDeep",
+        "title": "Dig Deep: Read the Codebase for Better Inputs",
+        "category": "Spot Run",
+        "icon": "$(telescope)"
       }
     ],
     "keybindings": [
@@ -237,6 +243,11 @@
           "command": "spotrun.describe",
           "when": "editorLangId == python",
           "group": "navigation@91"
+        },
+        {
+          "command": "spotrun.digDeep",
+          "when": "editorLangId == python",
+          "group": "navigation@92"
         }
       ],
       "editor/title": [
@@ -393,6 +404,18 @@
           "type": "boolean",
           "default": true,
           "description": "Save the file before running. The function is imported from disk, so unsaved edits are otherwise ignored."
+        },
+        "spotrun.digDeep.always": {
+          "type": "boolean",
+          "default": false,
+          "description": "Let the model read through the workspace every time it generates inputs, instead of only when you choose Dig deep. Gives better inputs for complicated functions and uses several model requests per generation."
+        },
+        "spotrun.digDeep.maxLookups": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "How many searches and file reads the model may make in one Dig deep. Each lookup is one more model request."
         }
       }
     },

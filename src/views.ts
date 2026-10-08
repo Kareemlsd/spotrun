@@ -93,10 +93,22 @@ export class PanelProvider implements vscode.TreeDataProvider<Node> {
       label: "Inputs",
       description:
         (this.modelName ? `via ${this.modelName}` : "built-in sample values") +
+        (this.data?.lookups ? ` · dug deep, ${this.data.lookups.length} lookup${this.data.lookups.length === 1 ? "" : "s"}` : "") +
         (this.data?.instructions?.length ? ` · “${truncate(this.data.instructions[this.data.instructions.length - 1], 60)}”` : ""),
       expanded: true,
       children: (result.args ?? []).map((arg) => ({ kind: "arg" as const, arg, pinned: arg.name in pins.args })),
     });
+
+    if (this.data?.lookups && this.data.lookups.length > 0) {
+      const children: Node[] = this.data.lookups.map((label) => ({ kind: "info" as const, label, icon: "search", tooltip: "Looked up in your workspace by the model" }));
+      if (this.data.notes) {
+        children.push({ kind: "info", label: truncate(this.data.notes, 120), icon: "note", tooltip: this.data.notes, description: "" });
+      }
+      for (const statement of this.data.imports ?? []) {
+        children.push({ kind: "info", label: statement, icon: "symbol-namespace", tooltip: "Import the generated inputs rely on" });
+      }
+      nodes.push({ kind: "section", id: "dig", label: "Dug deep", description: `${this.data.lookups.length}`, expanded: false, children });
+    }
 
     const resolutions = result.resolutions ?? [];
     if (resolutions.length > 0) {

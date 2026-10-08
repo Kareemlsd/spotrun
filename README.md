@@ -32,6 +32,12 @@ Generated arguments are remembered per function and reused until the signature c
 
 Without a model (no Copilot, consent declined, `spotrun.useLanguageModel` off) the runtime falls back to values derived from type hints and parameter names, and to fakes for everything else. The tool stays usable, the data is just less realistic.
 
+### Dig deep
+
+For functions whose signature says little about the data (untyped parameters, dicts with a particular shape, objects defined elsewhere), click **Dig deep** above a function that has been run, or use the command **Spot Run: Dig Deep**. The model may then look through your workspace before it proposes inputs: it can search, read parts of files, fetch a definition, or list call sites. It answers with arguments, the imports those arguments need for types from other modules, and a short note on the data shapes it found, which is reused when fake values are invented. The Spot Run panel lists every lookup under **Dug deep**.
+
+This is opt-in because it costs more. Each lookup is one more model request (eight at most by default, `spotrun.digDeep.maxLookups`), and parts of the files it reads are sent to the model. The first use asks for confirmation. Dependencies, hidden folders, large files and anything whose name looks like a secret (`.env`, `secrets.*`, key files) are never read. The result is cached like any other inputs, so later runs cost nothing. Set `spotrun.digDeep.always` to dig every time inputs are generated.
+
 ### Choosing the model
 
 While a Python file is open, the status bar shows the model in use, for example `Spot Run: GPT-4o mini`. Click it, or run **Spot Run: Select Language Model**, to pick from the models VS Code currently offers (GitHub Copilot's and any other registered provider's), or choose Automatic or None. The choice is stored in your user settings. If a replay is showing, the function runs again with fresh inputs from the new model.
@@ -86,6 +92,8 @@ The **Spot Run** section in the Explorer sidebar (click the status bar entry to 
 | `spotrun.startAt` | `first` | Start the replay on the first line or at the end |
 | `spotrun.timeoutSeconds` | `20` | Model wait time excluded |
 | `spotrun.maxModelCalls` | `30` | Per run, for fake values |
+| `spotrun.digDeep.always` | `false` | Read the workspace every time inputs are generated |
+| `spotrun.digDeep.maxLookups` | `8` | Searches and file reads per Dig deep, one model request each |
 | `spotrun.codeLens` | `true` | Show the action above functions |
 | `spotrun.saveBeforeRun` | `true` | The function is imported from disk |
 

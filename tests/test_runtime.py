@@ -390,3 +390,42 @@ def test_temp_directory_is_left_alone():
     r = spot("writers.py", "temp_files_are_real")
     assert r["exception"] is None, r["exception"]
     assert r["return"] == "('real', False)"
+
+
+# ---------------------------------------------------------------- imports
+
+
+DEEP_ARGS = {
+    "ledger": "Ledger({'EUR': 1.0, 'USD': 0.9})",
+    "entries": "[{'ref': 'A-1', 'kind': 'invoice', 'amount': 100.0, 'currency': 'USD'}, {'ref': 'A-2', 'kind': 'transfer', 'amount': 40.0, 'currency': 'EUR'}]",
+    "policy": "Policy(allowed=('invoice', 'refund'))",
+}
+
+
+def test_arguments_can_use_types_from_other_modules_through_imports():
+    def llm(message):
+        if message["type"] == "need_args":
+            return {"args": DEEP_ARGS, "imports": ["from deep_models import Ledger, Policy"]}
+        return {}
+
+    r = spot("deep.py", "settle", llm=llm)
+    assert r["exception"] is None, r["exception"]
+    assert r["return"] == "(90.0, ['A-2'])"
+    assert r["imports"] == ["from deep_models import Ledger, Policy"] and r["import_errors"] == []
+
+    # Cached run: the imports travel with the request.
+    again = run_once({"file": os.path.join(SAMPLES, "deep.py"), "qualname": "settle", "args": DEEP_ARGS, "imports": r["imports"]})
+    assert again["return"] == "(90.0, ['A-2'])"
+
+
+def test_without_the_import_the_expression_is_rejected_and_falls_back():
+    r = spot("deep.py", "settle", args=DEEP_ARGS)
+    assert "NameError" in r["args"][0]["error"]
+
+
+def test_only_import_statements_are_accepted():
+    marker = os.path.join(SAMPLES, "imports_ran.txt")
+    r = spot("deep.py", "settle", args={}, imports=["open(%r, 'w').write('x')" % marker, "import no_such_module_xyz", "import json"])
+    assert not os.path.exists(marker)
+    assert len(r["import_errors"]) == 2
+    assert "only import statements" in r["import_errors"][0] and "no_such_module_xyz" in r["import_errors"][1]

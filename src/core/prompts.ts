@@ -82,6 +82,8 @@ export interface ValuePromptInput {
   known: { path: string; expr: string }[];
   args: { name: string; value: string }[];
   instructions?: string[];
+  /** What dig deep learned about the codebase's data shapes. */
+  notes?: string;
 }
 
 const OP_HINTS: Record<string, string> = {
@@ -115,6 +117,7 @@ export function buildValuePrompt(input: ValuePromptInput): string {
     "",
     ...args,
     ...known,
+    ...(input.notes ? ["What is known about this codebase's data, from reading it:", input.notes, ""] : []),
     ...scenario(input.instructions, true),
     need.text ? `Current line: \`${need.text}\`` : "The function has just returned.",
     `Expression that needs a value: \`${need.path}\``,

@@ -1,10 +1,10 @@
 import { spawn } from "child_process";
-import { NeedArgs, NeedValue, RunResult, StartRequest } from "./types";
+import { ArgsAnswer, NeedArgs, NeedValue, RunResult, StartRequest } from "./types";
 
 const PREFIX = "\x1eSPOTRUN ";
 
 export interface Handlers {
-  needArgs(message: NeedArgs): Promise<Record<string, string> | undefined>;
+  needArgs(message: NeedArgs): Promise<ArgsAnswer | undefined>;
   needValue(message: NeedValue): Promise<string | undefined>;
 }
 
@@ -106,14 +106,14 @@ export function execute(request: StartRequest, handlers: Handlers, options: Exec
         finish(undefined, message as RunResult);
       } else if (message.type === "need_args") {
         pause();
-        let args: Record<string, string> | undefined;
+        let args: ArgsAnswer | undefined;
         try {
           args = await handlers.needArgs(message as NeedArgs);
         } catch (error) {
           options.log?.(`argument generation failed: ${String(error)}`);
         }
         arm();
-        send({ type: "args", args: args ?? null });
+        send({ type: "args", args: args?.args ?? null, imports: args?.imports ?? [] });
       } else if (message.type === "need_value") {
         pause();
         let expr: string | undefined;

@@ -22,7 +22,7 @@ from . import guard
 from .fakes import Hooks, is_fake, make_fake, _st
 from .protocol import Capture, Channel, NullChannel
 from .tracer import Recorder, make_scope
-from .values import FAKE, build_namespace, describe, evaluate, expression_for, guess
+from .values import FAKE, apply_imports, build_namespace, describe, evaluate, expression_for, guess
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -367,6 +367,9 @@ def build_arguments(function, cls, needs_self, module, namespace, request, chann
         )
         provided = reply.get("args")
         provided_source = "llm"
+        if isinstance(reply.get("imports"), list):
+            request["imports"] = reply["imports"]
+            request["_import_errors"] = apply_imports(namespace, reply["imports"])
     if not isinstance(provided, dict):
         provided = {}
 
@@ -556,6 +559,11 @@ def run(request, channel):
     function, cls, needs_self, raw = find_target(module, request["qualname"])
     namespace = build_namespace(module)
     resolver.namespace = namespace
+    guard.arm()
+    try:
+        request["_import_errors"] = apply_imports(namespace, request.get("imports"))
+    finally:
+        guard.disarm()
     if scope_mode == "function" and getattr(raw, "__code__", None) is not None:
         recorder.only_code = raw.__code__
 
@@ -571,6 +579,8 @@ def run(request, channel):
         "file": os.path.abspath(file),
         "args": arg_info,
         "is_async": inspect.iscoroutinefunction(raw) or inspect.isasyncgenfunction(raw),
+        "imports": [i for i in (request.get("imports") or []) if isinstance(i, str)],
+        "import_errors": request.get("_import_errors") or [],
     }
 
     if not tracing:

@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { createFsHost, dig } from "./core/dig";
 import { buildArgsPrompt, buildContext, buildValuePrompt, parseArgsReply, parseValueReply } from "./core/prompts";
 import { findByQualname, functionAt, parsePythonFunctions, PyFunction, signatureOf, sourceOf } from "./core/pythonFunctions";
 import { ReplayModel, truncate } from "./core/replayModel";
@@ -71,6 +72,7 @@ class Controller implements vscode.Disposable {
     register("spotrun.editValue", (node?: Node) => this.editValue(node));
     register("spotrun.unpin", (node?: Node) => this.unpin(node));
     register("spotrun.forget", () => this.forget());
+    register("spotrun.digDeep", (uri?: vscode.Uri, qualname?: string) => this.digDeep(uri, qualname));
     register("spotrun.describe", (uri?: vscode.Uri, qualname?: string) => this.describe(uri, qualname));
     register("spotrun.submitInstruction", (reply: vscode.CommentReply) => this.submitInstruction(reply));
     register("spotrun.clearInstruction", (thread: vscode.CommentThread) => this.clearInstruction(thread));
@@ -181,6 +183,12 @@ class Controller implements vscode.Disposable {
             command: "spotrun.describe",
             arguments: [document.uri, fn.qualname],
           }),
+          new vscode.CodeLens(range, {
+            title: "$(telescope) Dig deep",
+            tooltip: "Let the model read through your codebase before proposing inputs. Better inputs for complicated functions, more tokens.",
+            command: "spotrun.digDeep",
+            arguments: [document.uri, fn.qualname],
+          }),
           new vscode.CodeLens(range, { title: "$(refresh) New inputs", command: "spotrun.regenerate", arguments: [document.uri, fn.qualname] }),
           new vscode.CodeLens(range, { title: "$(debug-stop) Stop", command: "spotrun.stop" }),
         );
@@ -236,6 +244,33 @@ class Controller implements vscode.Disposable {
       this.status.hide();
       void vscode.window.showErrorMessage(`Spot Run failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  // --------------------------------------------------------------- dig deep
+
+  private async digDeep(uri: vscode.Uri | undefined, qualname: string | undefined): Promise<void> {
+    const explicit = uri instanceof vscode.Uri && typeof qualname === "string";
+    const target = this.targetAtCursor(uri, qualname) ?? (explicit ? undefined : (this.current?.target ?? this.lastTarget));
+    if (!target) {
+      void vscode.window.showInformationMessage("Spot Run: put the cursor inside a Python function first.");
+      return;
+    }
+    if (!(await this.llm.pick())) {
+      void vscode.window.showWarningMessage("Spot Run: Dig deep needs a language model, and none is available.");
+      return;
+    }
+    if (!this.context.globalState.get<boolean>("spotrun.digDeepExplained")) {
+      const choice = await vscode.window.showInformationMessage(
+        "Dig deep lets the model search and read files in this workspace before it proposes inputs. Parts of those files are sent to the model, and a run uses several requests instead of one.",
+        { modal: true },
+        "Dig Deep",
+      );
+      if (choice !== "Dig Deep") {
+        return;
+      }
+      await this.context.globalState.update("spotrun.digDeepExplained", true);
+    }
+    await this.guarded(() => this.run(target, true, undefined, true));
   }
 
   // ------------------------------------------------------- described inputs
@@ -325,7 +360,7 @@ class Controller implements vscode.Disposable {
     return `spotrun.fn:${vscode.workspace.asRelativePath(target.uri, true)}::${target.qualname}`;
   }
 
-  private async run(target: Target, regenerate: boolean, patch?: (data: FunctionData) => FunctionData): Promise<void> {
+  private async run(target: Target, regenerate: boolean, patch?: (data: FunctionData) => FunctionData, digDeep = false): Promise<void> {
     if (target.uri.scheme !== "file") {
       void vscode.window.showWarningMessage("Spot Run works on files saved to disk.");
       return;
@@ -380,7 +415,9 @@ class Controller implements vscode.Disposable {
     this.status.show();
     this.log.appendLine(`\n── ${target.qualname} (${vscode.workspace.asRelativePath(target.uri)}) with ${python}`);
 
-    const handlers = this.handlers(target, fn, text, signature, data, cancel.token);
+    const useDig = digDeep || config.get<boolean>("digDeep.always", false);
+    const digSteps = Math.max(1, Math.min(30, config.get<number>("digDeep.maxLookups", 8)));
+    const handlers = this.handlers(target, fn, text, signature, data, cancel.token, useDig ? { root, maxSteps: digSteps } : undefined);
     const started = Date.now();
     try {
       const outcome = await runWithRetries(spec, data, handlers, {
@@ -394,8 +431,16 @@ class Controller implements vscode.Disposable {
       if (abort.signal.aborted) {
         return;
       }
+      if (handlers.generated.asked) {
+        // New arguments were generated in this run: record how.
+        outcome.data.lookups = handlers.generated.lookups;
+        outcome.data.notes = handlers.generated.notes ?? (handlers.generated.lookups ? undefined : outcome.data.notes);
+      }
       await this.context.workspaceState.update(key, outcome.data);
       const result = outcome.result;
+      for (const problem of result.import_errors ?? []) {
+        this.log.appendLine(`   import rejected: ${problem}`);
+      }
       this.runCount += 1;
       if (result.fatal) {
         this.log.appendLine(result.fatal);
@@ -471,7 +516,17 @@ class Controller implements vscode.Disposable {
     return path.join(this.context.extensionPath, "python", "spotrun_main.py");
   }
 
-  private handlers(target: Target, fn: PyFunction, text: string, signature: string, data: FunctionData, token: vscode.CancellationToken): Handlers {
+  private handlers(
+    target: Target,
+    fn: PyFunction,
+    text: string,
+    signature: string,
+    data: FunctionData,
+    token: vscode.CancellationToken,
+    digOptions?: { root: string; maxSteps: number },
+  ): Handlers & { generated: { asked: boolean; lookups?: string[]; notes?: string } } {
+    const generated: { asked: boolean; lookups?: string[]; notes?: string } = { asked: false };
+    let notes = data.notes;
     const functionSource = sourceOf(text, fn);
     const known: { path: string; expr: string }[] = [];
     let args: { name: string; value: string }[] = Object.entries({ ...(data.args ?? {}), ...data.pins.args }).map(([name, value]) => ({ name, value }));
@@ -501,7 +556,9 @@ class Controller implements vscode.Disposable {
     };
 
     return {
+      generated,
       needArgs: async (need: NeedArgs) => {
+        generated.asked = true;
         const usages = await this.findUsages(fn.name, target.uri);
         const prompt = buildArgsPrompt({
           relativePath: vscode.workspace.asRelativePath(target.uri),
@@ -512,6 +569,31 @@ class Controller implements vscode.Disposable {
           instructions: data.instructions,
           previousArgs: data.previousArgs,
         });
+        if (digOptions) {
+          this.log.appendLine(`   dig deep: up to ${digOptions.maxSteps} lookups in ${digOptions.root}`);
+          const outcome = await dig({
+            host: createFsHost(digOptions.root),
+            prompt,
+            maxSteps: digOptions.maxSteps,
+            send: (messages) => this.llm.converse(messages, token),
+            onStep: (step, label) => {
+              this.log.appendLine(`   dig deep ${step}/${digOptions.maxSteps}: ${label}`);
+              this.status.text = `$(loading~spin) Spot Run: ${target.qualname} · digging ${step}/${digOptions.maxSteps} · ${truncate(label, 40)}`;
+            },
+          });
+          this.status.text = `$(loading~spin) Spot Run: ${target.qualname}`;
+          if (outcome) {
+            generated.lookups = outcome.lookups;
+            generated.notes = outcome.notes || undefined;
+            notes = generated.notes;
+            if (outcome.notes) {
+              this.log.appendLine(`   dig deep notes: ${outcome.notes}`);
+            }
+            args = Object.entries({ ...outcome.args, ...data.pins.args }).map(([name, value]) => ({ name, value }));
+            return { args: outcome.args, imports: outcome.imports };
+          }
+          this.log.appendLine("   dig deep gave no usable answer; asking once without it.");
+        }
         const reply = await this.llm.ask(prompt, token);
         if (reply === undefined) {
           return undefined;
@@ -522,7 +604,7 @@ class Controller implements vscode.Disposable {
           return undefined;
         }
         args = Object.entries({ ...parsed, ...data.pins.args }).map(([name, value]) => ({ name, value }));
-        return parsed;
+        return { args: parsed };
       },
       needValue: async (need: NeedValue) => {
         const prompt = buildValuePrompt({
@@ -532,6 +614,7 @@ class Controller implements vscode.Disposable {
           known,
           args,
           instructions: data.instructions,
+          notes,
         });
         const reply = await this.llm.ask(prompt, token);
         if (reply === undefined) {

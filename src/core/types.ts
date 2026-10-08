@@ -102,6 +102,14 @@ export interface RunResult {
   retry: { patch?: string; eager?: EagerHint } | null;
   llm_calls: number;
   written_files: string[];
+  imports?: string[];
+  import_errors?: string[];
+}
+
+/** Generated arguments, with the imports their expressions rely on. */
+export interface ArgsAnswer {
+  args: Record<string, string>;
+  imports?: string[];
 }
 
 export interface ParamInfo {
@@ -146,6 +154,7 @@ export interface StartRequest {
   cache: Record<string, string>;
   extra_patches: string[];
   eager: EagerHint[];
+  imports: string[];
   scope: string;
   limits: Record<string, number>;
   trace?: boolean;
@@ -161,6 +170,12 @@ export interface FunctionData {
   pins: Pins;
   /** What the user asked the inputs to look like, oldest first. */
   instructions: string[];
+  /** Import statements the generated arguments need (from dig deep). */
+  imports?: string[];
+  /** What dig deep learned about data shapes, reused for fake values. */
+  notes?: string;
+  /** What dig deep looked up to produce the current arguments. */
+  lookups?: string[];
   /** Arguments of the run a new instruction refines. Not persisted. */
   previousArgs?: Record<string, string> | null;
 }

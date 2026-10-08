@@ -331,6 +331,35 @@ try {
     await open("pure.py", 21);
   }
 
+  // ---- 8d. dig deep
+  if (withModel) {
+    await open("deep.py", 2);
+    await palette("Spot Run: Run Function at Cursor");
+    status = await waitForReplay("settle");
+    check("without digging the untyped function gets placeholder inputs", !status.includes("90.0"), status);
+    await shot("18-before-dig");
+    const before = fs.readFileSync(lmLog, "utf8").split("=== PROMPT ===").length;
+    await palette("Spot Run: Dig Deep");
+    await page.locator(".monaco-dialog-box").getByText("Dig Deep", { exact: true }).last().click();
+    await page.waitForFunction(() => [...document.querySelectorAll(".statusbar-item")].some((e) => e.textContent.includes("90.0")), null, { timeout: 40000 });
+    await page.waitForTimeout(800);
+    status = await statusText();
+    check("dig deep finds real input shapes in the codebase", status.includes("(90.0, ['A-2'])"), status);
+    check("dig deep made three model requests", fs.readFileSync(lmLog, "utf8").split("=== PROMPT ===").length - before === 3);
+    await page.locator(".statusbar-item", { hasText: "settle" }).first().click();
+    await page.waitForTimeout(1200);
+    await page.locator(".pane-header", { hasText: "workspace" }).first().click();
+    await page.waitForTimeout(600);
+    await page.locator(".pane", { hasText: "Spot Run" }).getByText("Dug deep", { exact: true }).first().click();
+    await page.waitForTimeout(600);
+    const digPanel = (await page.locator(".pane", { hasText: "Spot Run" }).allTextContents()).join(" ");
+    check("the panel lists what was looked up", digPanel.includes("usages settle") && digPanel.includes("definition Ledger") && digPanel.includes("from deep_models import Ledger, Policy"), digPanel.slice(0, 500));
+    await shot("19-after-dig");
+    await page.locator(".pane-header", { hasText: "workspace" }).first().click();
+    await page.waitForTimeout(400);
+    await open("pure.py", 21);
+  }
+
   // ---- 8c. choosing the model from the status bar
   if (withModel) {
     const modelItem = page.locator(".statusbar-item", { hasText: "Spot Run:" }).first();

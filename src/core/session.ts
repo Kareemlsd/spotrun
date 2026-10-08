@@ -28,6 +28,7 @@ export function buildRequest(spec: RunSpec, data: FunctionData): StartRequest {
     cache: data.fakes,
     extra_patches: data.patches,
     eager: data.eager,
+    imports: data.imports ?? [],
     scope: spec.scope,
     limits: spec.limits,
   };
@@ -43,6 +44,9 @@ export function absorb(data: FunctionData, result: RunResult): { data: FunctionD
     eager: [...data.eager],
     pins: { args: { ...data.pins.args }, fakes: { ...data.pins.fakes } },
     instructions: [...(data.instructions ?? [])],
+    imports: [...(data.imports ?? [])],
+    notes: data.notes,
+    lookups: data.lookups ? [...data.lookups] : undefined,
   };
   if (result.fatal) {
     return { data: next, retry: false };
@@ -55,6 +59,7 @@ export function absorb(data: FunctionData, result: RunResult): { data: FunctionD
   const generated = (result.args ?? []).filter((a) => a.source === "llm" && a.expr);
   if (generated.length > 0) {
     next.args = {};
+    next.imports = [...(result.imports ?? [])];
     for (const arg of result.args) {
       if ((arg.source === "llm" || arg.source === "cache") && arg.expr) {
         next.args[arg.name] = arg.expr;

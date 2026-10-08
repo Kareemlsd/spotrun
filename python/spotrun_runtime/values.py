@@ -194,6 +194,28 @@ def evaluate(expr, namespace):
     return eval(compile(expr.strip(), "<spotrun expression>", "eval"), namespace)
 
 
+def apply_imports(namespace, statements):
+    """Run import statements proposed with generated arguments, so that
+    expressions can use types defined in other modules of the workspace.
+    Anything that is not a plain import is refused. Returns error strings."""
+    import ast
+
+    errors = []
+    for statement in statements or []:
+        if not isinstance(statement, str) or not statement.strip():
+            continue
+        try:
+            tree = ast.parse(statement.strip())
+            if not tree.body or not all(isinstance(node, (ast.Import, ast.ImportFrom)) for node in tree.body):
+                raise ValueError("only import statements are allowed")
+            exec(compile(tree, "<spotrun import>", "exec"), namespace)
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            errors.append("%s: %s: %s" % (statement.strip(), type(exc).__name__, exc))
+    return errors
+
+
 def round_trips(value):
     """True when repr(value) is a usable expression for the same value."""
     if value is None or isinstance(value, (bool, int, float, str, bytes)):
@@ -454,6 +476,7 @@ def expression_for(value):
 
 __all__ = [
     "FAKE",
+    "apply_imports",
     "Fake",
     "build_namespace",
     "describe",

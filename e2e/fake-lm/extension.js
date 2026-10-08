@@ -4,6 +4,23 @@ const vscode = require("vscode");
 const fs = require("fs");
 
 function answer(prompt) {
+  if (prompt.includes("DIG DEEP IS ON") && prompt.includes("Function to run: `settle`")) {
+    if (!prompt.includes("# deep_caller.py:")) {
+      return '{"action": "usages", "name": "settle"}';
+    }
+    if (!prompt.includes("class Ledger")) {
+      return 'I should check the type.\n{"action": "definition", "name": "Ledger"}';
+    }
+    return JSON.stringify({
+      args: {
+        ledger: "Ledger({'EUR': 1.0, 'USD': 0.9})",
+        entries: "[{'ref': 'A-1', 'kind': 'invoice', 'amount': 100.0, 'currency': 'USD'}, {'ref': 'A-2', 'kind': 'transfer', 'amount': 40.0, 'currency': 'EUR'}]",
+        policy: "Policy(allowed=('invoice', 'refund'))",
+      },
+      imports: ["from deep_models import Ledger, Policy"],
+      notes: "Entries are dicts with ref, kind, amount and currency. Ledger maps currency codes to rates.",
+    });
+  }
   if (prompt.includes('{"args":')) {
     if (prompt.includes('"""make it three prices"""') && prompt.includes("- prices = [-5.0, 10.0]") && prompt.includes("- one negative price and no tax")) {
       return '{"args": {"prices": "[-5.0, 10.0, 2.5]", "tax": "0.0"}}';
