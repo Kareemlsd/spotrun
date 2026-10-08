@@ -2,7 +2,7 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "kareemlsd",
   "private": true,
   "repository": {
@@ -286,8 +286,8 @@
         },
         "spotrun.model": {
           "type": "string",
-          "default": "",
-          "markdownDescription": "Model to use, matched against the model's family, id or name (for example `gpt-4o-mini`). Leave empty to pick the smallest fast model that is available. Use the command **Spot Run: Select Language Model** to choose from a list."
+          "default": "6-luna",
+          "markdownDescription": "Model to use, matched against the model's family, id or name, ignoring case and punctuation (for example `6-luna`). If it is not available, or the setting is empty, the smallest fast model is picked, Copilot first. Use the command **Spot Run: Select Language Model** to choose from a list."
         },
         "spotrun.pythonPath": {
           "type": "string",

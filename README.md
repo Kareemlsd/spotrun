@@ -69,7 +69,7 @@ The **Spot Run** section in the Explorer sidebar (click the status bar entry to 
 | Setting | Default | |
 | --- | --- | --- |
 | `spotrun.useLanguageModel` | `true` | Use a model for inputs and fake values |
-| `spotrun.model` | `""` | Model family, id or name. Empty picks the smallest fast model, Copilot first |
+| `spotrun.model` | `6-luna` | Model family, id or name, matched ignoring case and punctuation. Falls back to the smallest fast model, Copilot first, when it is not available |
 | `spotrun.pythonPath` | `""` | Interpreter. Empty uses the Python extension's selection |
 | `spotrun.scope` | `workspace` | What is recorded for stepping into: `workspace`, `file` or `function` |
 | `spotrun.startAt` | `first` | Start the replay on the first line or at the end |

@@ -24,7 +24,7 @@ export class LanguageModel {
   }
 
   private preference(): string {
-    return vscode.workspace.getConfiguration("spotrun").get<string>("model", "").trim();
+    return vscode.workspace.getConfiguration("spotrun").get<string>("model", "6-luna").trim();
   }
 
   enabled(): boolean {
@@ -57,9 +57,12 @@ export class LanguageModel {
     let chosen: vscode.LanguageModelChat | undefined;
     if (preference) {
       const wanted = preference.toLowerCase();
+      // "6-luna" should also match "GPT-6 Luna" or "gpt_6_luna": compare on letters and digits only.
+      const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
       chosen =
         models.find((m) => m.id.toLowerCase() === wanted || m.family.toLowerCase() === wanted) ??
-        models.find((m) => `${m.id} ${m.family} ${m.name}`.toLowerCase().includes(wanted));
+        models.find((m) => `${m.id} ${m.family} ${m.name}`.toLowerCase().includes(wanted)) ??
+        models.find((m) => [m.id, m.family, m.name].some((field) => squash(field).includes(squash(wanted))));
       if (!chosen && models.length > 0) {
         this.log.appendLine(`Configured model "${preference}" is not available; choosing automatically.`);
       }
