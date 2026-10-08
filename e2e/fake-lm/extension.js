@@ -5,6 +5,12 @@ const fs = require("fs");
 
 function answer(prompt) {
   if (prompt.includes('{"args":')) {
+    if (prompt.includes('"""make it three prices"""') && prompt.includes("- prices = [-5.0, 10.0]") && prompt.includes("- one negative price and no tax")) {
+      return '{"args": {"prices": "[-5.0, 10.0, 2.5]", "tax": "0.0"}}';
+    }
+    if (prompt.includes('"""one negative price and no tax"""')) {
+      return '{"args": {"prices": "[-5.0, 10.0]", "tax": "0.0"}}';
+    }
     if (prompt.includes("Function to run: `fetch_prices`")) {
       return 'Here you go:\n```json\n{"args": {"base_url": "\'https://shop.test\'", "min_price": "10"}}\n```';
     }
@@ -18,7 +24,7 @@ function answer(prompt) {
   }
   const path = (/Expression that needs a value: `(.*)`/.exec(prompt) || [])[1] || "";
   if (path.endsWith(".status_code")) {
-    return '{"value": 200}';
+    return prompt.includes('"""the API answers 404"""') ? '{"value": 404}' : '{"value": 200}';
   }
   if (path.endsWith("['items']")) {
     return '{"value": "[{\'name\': \'pen\', \'price\': 2.5}, {\'name\': \'desk\', \'price\': 120.0}, {\'name\': \'lamp\', \'price\': 35.0}]"}';

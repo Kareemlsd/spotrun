@@ -357,3 +357,43 @@ test("runtime: a missing interpreter is reported", async () => {
     /Could not start Python/,
   );
 });
+
+test("a described scenario is carried into both prompts", () => {
+  const need = {
+    type: "need_args" as const,
+    class_name: null,
+    names: [],
+    params: [{ name: "prices", kind: "POSITIONAL_OR_KEYWORD", annotation: "list[float]", has_default: false, default: null, is_self: false }],
+  };
+  const plain = buildArgsPrompt({ relativePath: "m.py", qualname: "total", context: "", need, usages: [], previousArgs: { prices: "[1.0]" } });
+  assert.doesNotMatch(plain, /described the inputs/);
+  assert.doesNotMatch(plain, /previous run/);
+
+  const first = buildArgsPrompt({ relativePath: "m.py", qualname: "total", context: "", need, usages: [], instructions: ["one negative price"] });
+  assert.match(first, /described the inputs to test with/);
+  assert.match(first, /"""one negative price"""/);
+  assert.doesNotMatch(first, /Earlier requests/);
+
+  const followUp = buildArgsPrompt({
+    relativePath: "m.py",
+    qualname: "total",
+    context: "",
+    need,
+    usages: [],
+    instructions: ["one negative price", "make it three prices"],
+    previousArgs: { prices: "[-5.0]" },
+  });
+  assert.match(followUp, /Earlier requests[^]*- one negative price[^]*Latest request:\n"""make it three prices"""/);
+  assert.match(followUp, /previous run[^]*- prices = \[-5\.0\]/);
+  assert.ok(followUp.indexOf("Latest request") < followUp.indexOf("Reply with one JSON object"));
+
+  const value = buildValuePrompt({
+    qualname: "fetch",
+    functionSource: "def fetch(): ...",
+    need: { type: "need_value", path: "r.status_code", op: "eq", detail: null, file: null, line: 1, text: "if r.status_code != 200:" },
+    known: [],
+    args: [],
+    instructions: ["the API answers 404"],
+  });
+  assert.match(value, /"""the API answers 404"""/);
+});

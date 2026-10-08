@@ -282,8 +282,58 @@ try {
   }
   await shot("10-database");
 
+  // ---- 8b. inputs described in the inline conversation
+  if (withModel) {
+    const describe = async (text) => {
+      // After the first exchange the reply box is folded into a button.
+      const folded = page.locator(".review-widget .review-thread-reply-button").last();
+      if (await folded.isVisible().catch(() => false)) {
+        await folded.click();
+      }
+      const box = page.locator(".review-widget .comment-form .monaco-editor").last();
+      await box.click();
+      await page.keyboard.type(text, { delay: 5 });
+      await page.locator(".review-widget").getByText("Run with These Inputs", { exact: true }).last().click();
+    };
+    const threadText = async () => (await page.locator(".review-widget").allTextContents()).join(" ");
+    await open("pure.py", 21);
+    await palette("Spot Run: Describe Inputs for Function at Cursor");
+    await page.waitForSelector(".review-widget .comment-form", { timeout: 15000 });
+    await shot("12-describe-open");
+    console.log("     title actions: " + JSON.stringify(await page.locator(".review-widget .review-actions a.action-label, .review-widget .head a.action-label").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") || e.title))));
+    await describe("one negative price and no tax");
+    await page.waitForFunction(() => [...document.querySelectorAll(".review-widget")].some((w) => w.textContent.includes("Returned")), null, { timeout: 40000 });
+    status = await waitForReplay("total");
+    inline = await inlineTexts();
+    check("described inputs are used", inline.some((t) => t.includes("prices = [-5.0, 10.0], tax = 0.0")), JSON.stringify(inline));
+    let conversation = await threadText();
+    check("the conversation shows the request and the result", conversation.includes("one negative price and no tax") && conversation.includes("Returned") && conversation.includes("5.0"), conversation.slice(0, 400));
+    await shot("13-describe-result");
+    await describe("make it three prices");
+    await page.waitForFunction(() => [...document.querySelectorAll(".review-widget")].some((w) => (w.textContent.match(/Returned/g) || []).length >= 2), null, { timeout: 40000 });
+    await page.waitForTimeout(800);
+    inline = await inlineTexts();
+    check("a follow-up refines the previous inputs", inline.some((t) => t.includes("prices = [-5.0, 10.0, 2.5]")), JSON.stringify(inline));
+    await shot("14-describe-follow-up");
+    check("the Comments panel is not opened", (await page.locator(".panel .composite.title", { hasText: "Comments" }).count()) === 0 && !(await page.locator(".part.panel").isVisible().catch(() => false)));
+
+    await open("effects.py", 12);
+    await palette("Spot Run: Describe Inputs for Function at Cursor");
+    await page.waitForTimeout(1500);
+    await describe("the API answers 404");
+    await page.waitForFunction(() => [...document.querySelectorAll(".review-widget")].some((w) => w.textContent.includes("the API answers 404") && w.textContent.includes("Returned")), null, { timeout: 40000 });
+    await page.waitForTimeout(800);
+    await palette("Spot Run: Go to End");
+    await page.waitForTimeout(600);
+    status = await statusText();
+    check("the description also steers fake values", /fetch_prices · end · → \[\]/.test(status), status);
+    await shot("15-describe-fake-value");
+    await open("pure.py", 21);
+  }
+
   // ---- 9. editing ends the replay
-  await page.locator(".view-lines").first().click({ position: { x: 400, y: 200 } });
+  await page.keyboard.press("Control+1");
+  await page.waitForTimeout(300);
   await page.keyboard.type(" ");
   await page.waitForTimeout(800);
   check("editing the file ends the replay", (await statusText()) === "", await statusText());

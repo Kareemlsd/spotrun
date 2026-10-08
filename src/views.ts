@@ -91,7 +91,9 @@ export class PanelProvider implements vscode.TreeDataProvider<Node> {
       kind: "section",
       id: "inputs",
       label: "Inputs",
-      description: this.modelName ? `via ${this.modelName}` : "built-in sample values",
+      description:
+        (this.modelName ? `via ${this.modelName}` : "built-in sample values") +
+        (this.data?.instructions?.length ? ` · “${truncate(this.data.instructions[this.data.instructions.length - 1], 60)}”` : ""),
       expanded: true,
       children: (result.args ?? []).map((arg) => ({ kind: "arg" as const, arg, pinned: arg.name in pins.args })),
     });

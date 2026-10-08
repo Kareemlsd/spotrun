@@ -159,8 +159,12 @@ export interface FunctionData {
   patches: string[];
   eager: EagerHint[];
   pins: Pins;
+  /** What the user asked the inputs to look like, oldest first. */
+  instructions: string[];
+  /** Arguments of the run a new instruction refines. Not persisted. */
+  previousArgs?: Record<string, string> | null;
 }
 
 export function emptyFunctionData(signature: string): FunctionData {
-  return { signature, args: null, fakes: {}, patches: [], eager: [], pins: { args: {}, fakes: {} } };
+  return { signature, args: null, fakes: {}, patches: [], eager: [], pins: { args: {}, fakes: {} }, instructions: [] };
 }

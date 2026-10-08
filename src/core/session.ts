@@ -42,6 +42,7 @@ export function absorb(data: FunctionData, result: RunResult): { data: FunctionD
     patches: [...data.patches],
     eager: [...data.eager],
     pins: { args: { ...data.pins.args }, fakes: { ...data.pins.fakes } },
+    instructions: [...(data.instructions ?? [])],
   };
   if (result.fatal) {
     return { data: next, retry: false };

@@ -8,6 +8,25 @@ export interface ArgsPromptInput {
   context: string;
   need: NeedArgs;
   usages: string[];
+  /** Scenario the user described, oldest request first. */
+  instructions?: string[];
+  /** Arguments of the previous run, which a follow-up request refines. */
+  previousArgs?: Record<string, string> | null;
+}
+
+/** The user's description of the scenario, shared by both prompt kinds. */
+function scenario(instructions: string[] | undefined, forValue: boolean): string[] {
+  if (!instructions || instructions.length === 0) {
+    return [];
+  }
+  const latest = instructions[instructions.length - 1];
+  const earlier = instructions.slice(0, -1);
+  const lines = [forValue ? "The user described the scenario this run should test. Where it says something about this value, follow it:" : "The user described the inputs to test with. Follow the description exactly; it takes priority over the rules about the main path and realistic defaults:"];
+  if (earlier.length > 0) {
+    lines.push("Earlier requests, still in force unless the latest one changes them:", ...earlier.map((text) => `- ${text}`), "Latest request:");
+  }
+  lines.push(`"""${latest}"""`, "");
+  return lines;
 }
 
 export function buildArgsPrompt(input: ArgsPromptInput): string {
@@ -24,6 +43,11 @@ export function buildArgsPrompt(input: ArgsPromptInput): string {
     input.usages.length > 0
       ? `\nExisting calls found in the workspace, as a guide to realistic values:\n${input.usages.map((u) => "```python\n" + u + "\n```").join("\n")}\n`
       : "";
+  const previousEntries = Object.entries(input.previousArgs ?? {});
+  const previous =
+    input.instructions && input.instructions.length > 0 && previousEntries.length > 0
+      ? ["Inputs used in the previous run. Keep what the request does not ask to change:", ...previousEntries.map(([name, expr]) => `- ${name} = ${expr}`), ""]
+      : [];
   return [
     "You generate sample inputs so that one Python function can be executed and inspected line by line.",
     "",
@@ -36,6 +60,8 @@ export function buildArgsPrompt(input: ArgsPromptInput): string {
     "Parameters:",
     params.length > 0 ? params.join("\n") : "(none)",
     usages,
+    ...scenario(input.instructions, false),
+    ...previous,
     "Reply with one JSON object and nothing else:",
     '{"args": {"<parameter name>": "<python expression>", ...}}',
     "",
@@ -55,6 +81,7 @@ export interface ValuePromptInput {
   need: NeedValue;
   known: { path: string; expr: string }[];
   args: { name: string; value: string }[];
+  instructions?: string[];
 }
 
 const OP_HINTS: Record<string, string> = {
@@ -88,6 +115,7 @@ export function buildValuePrompt(input: ValuePromptInput): string {
     "",
     ...args,
     ...known,
+    ...scenario(input.instructions, true),
     need.text ? `Current line: \`${need.text}\`` : "The function has just returned.",
     `Expression that needs a value: \`${need.path}\``,
     `How it is used: ${need.detail ?? "as a value"}`,

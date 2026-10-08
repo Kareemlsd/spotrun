@@ -8,6 +8,7 @@ import { ReplayModel, truncate } from "./core/replayModel";
 import { Handlers, RunError } from "./core/runtimeProcess";
 import { buildRequest, runWithRetries, RunSpec } from "./core/session";
 import { emptyFunctionData, FunctionData, NeedArgs, NeedValue } from "./core/types";
+import { InputChat } from "./inputChat";
 import { resolvePython } from "./interpreter";
 import { LanguageModel } from "./llm";
 import { ReplayView, sameFile } from "./replayView";
@@ -33,6 +34,7 @@ class Controller implements vscode.Disposable {
   private readonly panel = new PanelProvider();
   private readonly status: vscode.StatusBarItem;
   private readonly tree: vscode.TreeView<Node>;
+  private readonly chat = new InputChat();
   private readonly lensChanged = new vscode.EventEmitter<void>();
   private readonly disposables: vscode.Disposable[] = [];
   private current: Current | undefined;
@@ -66,6 +68,9 @@ class Controller implements vscode.Disposable {
     register("spotrun.editValue", (node?: Node) => this.editValue(node));
     register("spotrun.unpin", (node?: Node) => this.unpin(node));
     register("spotrun.forget", () => this.forget());
+    register("spotrun.describe", (uri?: vscode.Uri, qualname?: string) => this.describe(uri, qualname));
+    register("spotrun.submitInstruction", (reply: vscode.CommentReply) => this.submitInstruction(reply));
+    register("spotrun.clearInstruction", (thread: vscode.CommentThread) => this.clearInstruction(thread));
     register("spotrun.selectModel", () => this.llm.choose());
     register("spotrun.showLog", () => this.log.show());
     register("spotrun.showPanel", () => this.showPanel());
@@ -73,6 +78,7 @@ class Controller implements vscode.Disposable {
 
     this.disposables.push(
       this.llm,
+      this.chat,
       this.view,
       this.status,
       this.lensChanged,
@@ -138,6 +144,12 @@ class Controller implements vscode.Disposable {
       );
       if (active === fn.qualname) {
         lenses.push(
+          new vscode.CodeLens(range, {
+            title: "$(comment) Describe inputs",
+            tooltip: "Say in your own words what data the function should be tested with",
+            command: "spotrun.describe",
+            arguments: [document.uri, fn.qualname],
+          }),
           new vscode.CodeLens(range, { title: "$(refresh) New inputs", command: "spotrun.regenerate", arguments: [document.uri, fn.qualname] }),
           new vscode.CodeLens(range, { title: "$(debug-stop) Stop", command: "spotrun.stop" }),
         );
@@ -148,6 +160,26 @@ class Controller implements vscode.Disposable {
 
   // ------------------------------------------------------------------- run
 
+  /** The function a command refers to: explicit arguments, else the one at the cursor. */
+  private targetAtCursor(uri: vscode.Uri | undefined, qualname: string | undefined): Target | undefined {
+    if (uri instanceof vscode.Uri && typeof qualname === "string") {
+      return { uri, qualname };
+    }
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== "python") {
+      return undefined;
+    }
+    const functions = parsePythonFunctions(editor.document.getText());
+    let line = editor.selection.active.line;
+    let fn = functionAt(functions, line);
+    // A cursor on a decorator belongs to the definition below it.
+    while (!fn && line < editor.document.lineCount - 1 && editor.document.lineAt(line).text.trim().startsWith("@")) {
+      line += 1;
+      fn = functionAt(functions, line);
+    }
+    return fn ? { uri: editor.document.uri, qualname: fn.qualname } : undefined;
+  }
+
   private async runCommand(uri: vscode.Uri | undefined, qualname: string | undefined, regenerate: boolean): Promise<void> {
     let target: Target | undefined;
     if (uri instanceof vscode.Uri && typeof qualname === "string") {
@@ -156,33 +188,106 @@ class Controller implements vscode.Disposable {
       // "New inputs" during a replay refers to the function being replayed.
       target = this.current.target;
     } else {
-      const editor = vscode.window.activeTextEditor;
-      if (editor && editor.document.languageId === "python") {
-        const functions = parsePythonFunctions(editor.document.getText());
-        let line = editor.selection.active.line;
-        let fn = functionAt(functions, line);
-        // A cursor on a decorator belongs to the definition below it.
-        while (!fn && line < editor.document.lineCount - 1 && editor.document.lineAt(line).text.trim().startsWith("@")) {
-          line += 1;
-          fn = functionAt(functions, line);
-        }
-        if (fn) {
-          target = { uri: editor.document.uri, qualname: fn.qualname };
-        }
-      }
-      target = target ?? (regenerate ? (this.current?.target ?? this.lastTarget) : undefined);
+      target = this.targetAtCursor(uri, qualname) ?? (regenerate ? this.lastTarget : undefined);
     }
     if (!target) {
       void vscode.window.showInformationMessage("Spot Run: put the cursor inside a Python function first.");
       return;
     }
+    await this.guarded(() => this.run(target, regenerate));
+  }
+
+  private async guarded(action: () => Promise<void>): Promise<void> {
     try {
-      await this.run(target, regenerate);
+      await action();
     } catch (error) {
       this.log.appendLine(`Unexpected error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
       this.status.hide();
       void vscode.window.showErrorMessage(`Spot Run failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  // ------------------------------------------------------- described inputs
+
+  private async describe(uri: vscode.Uri | undefined, qualname: string | undefined): Promise<void> {
+    const explicit = uri instanceof vscode.Uri && typeof qualname === "string";
+    const target = this.targetAtCursor(uri, qualname) ?? (explicit ? undefined : this.current?.target);
+    if (!target) {
+      void vscode.window.showInformationMessage("Spot Run: put the cursor inside a Python function first.");
+      return;
+    }
+    const document = await vscode.workspace.openTextDocument(target.uri);
+    const fn = findByQualname(parsePythonFunctions(document.getText()), target.qualname);
+    if (!fn) {
+      return;
+    }
+    const stored = this.context.workspaceState.get<FunctionData>(this.storeKey(target));
+    const thread = this.chat.open(target, fn.headerEnd, stored?.instructions ?? []);
+    const editor = await vscode.window.showTextDocument(document, { preserveFocus: false });
+    editor.revealRange(new vscode.Range(fn.line, 0, fn.line, 0), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    // Put the caret in the reply box where the editor supports it.
+    try {
+      await (thread as unknown as { reveal?: (options: unknown) => Thenable<void> }).reveal?.({ focus: 1 });
+    } catch {
+      // Not available in this version: the box is one click away.
+    }
+  }
+
+  private async submitInstruction(reply: vscode.CommentReply): Promise<void> {
+    const text = reply?.text?.trim();
+    const target = reply ? this.chat.targetOf(reply.thread) : undefined;
+    if (!text || !target) {
+      return;
+    }
+    const thread = reply.thread;
+    this.chat.say(thread, "You", text);
+    if (!(await this.llm.pick())) {
+      this.chat.say(thread, "Spot Run", "Described inputs need a language model, and none is available. Sign in to GitHub Copilot or pick a model with **Spot Run: Select Language Model**.");
+      return;
+    }
+    const before = this.current;
+    await this.guarded(() =>
+      this.run(target, false, (data) => ({
+        ...data,
+        // New description, new data: drop generated arguments and fake values, keep pins.
+        previousArgs: data.args,
+        args: null,
+        fakes: {},
+        instructions: [...(data.instructions ?? []), text].slice(-5),
+      })),
+    );
+    const current = this.current;
+    if (!current || current === before || current.target.qualname !== target.qualname) {
+      this.chat.say(thread, "Spot Run", "The run did not finish. See **Spot Run: Show Log**.");
+      return;
+    }
+    const result = current.model.result;
+    const generated = result.args.some((a) => a.source === "llm");
+    const summary = new vscode.MarkdownString();
+    const shown = result.args.filter((a) => a.source !== "default");
+    summary.appendMarkdown(shown.length > 0 ? shown.map((a) => `\`${a.name} = ${truncate(a.expr ?? a.value ?? "", 120).replace(/`/g, "'")}\``).join("  \n") : "No arguments.");
+    summary.appendMarkdown(`\n\n${result.exception ? `Raised \`${truncate(`${result.exception.type}: ${result.exception.message}`, 160).replace(/`/g, "'")}\`` : `Returned \`${truncate(result.return ?? "None", 160).replace(/`/g, "'")}\``}`);
+    if (!generated && result.args.some((a) => a.source === "heuristic")) {
+      summary.appendMarkdown("\n\nThe model's answer could not be used, so these are built-in sample values. See **Spot Run: Show Log**.");
+    }
+    const rejected = result.args.filter((a) => a.error);
+    if (rejected.length > 0) {
+      summary.appendMarkdown(`\n\nRejected: ${rejected.map((a) => `\`${a.name}\` (${truncate(a.error ?? "", 80)})`).join(", ")}`);
+    }
+    this.chat.say(thread, "Spot Run", summary);
+  }
+
+  private async clearInstruction(thread: vscode.CommentThread | undefined): Promise<void> {
+    const target = thread ? this.chat.targetOf(thread) : undefined;
+    if (!target) {
+      return;
+    }
+    const key = this.storeKey(target);
+    const stored = this.context.workspaceState.get<FunctionData>(key);
+    if (stored) {
+      await this.context.workspaceState.update(key, { ...stored, instructions: [], args: null, fakes: {} });
+    }
+    this.chat.close(target);
   }
 
   private storeKey(target: Target): string {
@@ -373,6 +478,8 @@ class Controller implements vscode.Disposable {
           context: buildContext(text, functionSource, signature, fn.className),
           need,
           usages,
+          instructions: data.instructions,
+          previousArgs: data.previousArgs,
         });
         const reply = await this.llm.ask(prompt, token);
         if (reply === undefined) {
@@ -393,6 +500,7 @@ class Controller implements vscode.Disposable {
           need,
           known,
           args,
+          instructions: data.instructions,
         });
         const reply = await this.llm.ask(prompt, token);
         if (reply === undefined) {
@@ -576,6 +684,7 @@ class Controller implements vscode.Disposable {
       return;
     }
     await this.context.workspaceState.update(this.storeKey(target), undefined);
+    this.chat.close(target);
     this.clearReplay();
     void vscode.window.showInformationMessage(`Spot Run forgot the inputs, invented values and pins for ${target.qualname}.`);
   }

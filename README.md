@@ -13,6 +13,7 @@ Stepping is a replay of the recording, so it is instant and works backwards.
 | Key | Action |
 | --- | --- |
 | `Ctrl+Alt+Enter` | Run the function at the cursor |
+| `Ctrl+Alt+Shift+Enter` | Describe the inputs in your own words, then run |
 | `F10` | Step over |
 | `F11` | Step into (functions in your workspace are recorded too) |
 | `Shift+F11` | Step out |
@@ -30,6 +31,12 @@ The model receives the file (or, for large files, its imports, the classes the s
 Generated arguments are remembered per function and reused until the signature changes, so a second run makes no model request.
 
 Without a model (no Copilot, consent declined, `spotrun.useLanguageModel` off) the runtime falls back to values derived from type hints and parameter names, and to fakes for everything else. The tool stays usable, the data is just less realistic.
+
+### Describing the inputs
+
+Click **Describe inputs** above a function that has been run, or press `Ctrl+Alt+Shift+Enter` (`Cmd+Alt+Shift+Enter`) in any function. A small conversation opens under the `def` line. Say what the data should look like, for example "one negative price and no tax" or "the API answers 404", and the function runs with inputs built to that description. Follow-ups refine the previous inputs ("make it three prices"). The description steers the fake values as well as the arguments, is remembered for the function, and is used again by **New inputs**. The action in the conversation's title bar clears it. Pinned values still win. This needs a language model.
+
+The conversation uses VS Code's comment threads, so the extension sets the default of `comments.openView` to `never` to keep the Comments panel from opening on its own. Set it back in your settings if you rely on that panel for pull request reviews.
 
 ### Lazy fakes
 

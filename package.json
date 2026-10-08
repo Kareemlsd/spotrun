@@ -2,7 +2,7 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "kareemlsd",
   "private": true,
   "repository": {
@@ -118,6 +118,23 @@
         "command": "spotrun.showLog",
         "title": "Show Log",
         "category": "Spot Run"
+      },
+      {
+        "command": "spotrun.describe",
+        "title": "Describe Inputs for Function at Cursor",
+        "category": "Spot Run",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "spotrun.submitInstruction",
+        "title": "Run with These Inputs",
+        "category": "Spot Run"
+      },
+      {
+        "command": "spotrun.clearInstruction",
+        "title": "Clear Description and Close",
+        "category": "Spot Run",
+        "icon": "$(clear-all)"
       }
     ],
     "keybindings": [
@@ -125,6 +142,12 @@
         "command": "spotrun.run",
         "key": "ctrl+alt+enter",
         "mac": "cmd+alt+enter",
+        "when": "editorTextFocus && editorLangId == python"
+      },
+      {
+        "command": "spotrun.describe",
+        "key": "ctrl+alt+shift+enter",
+        "mac": "cmd+alt+shift+enter",
         "when": "editorTextFocus && editorLangId == python"
       },
       {
@@ -194,6 +217,14 @@
         {
           "command": "spotrun.regenerate",
           "when": "editorLangId == python || spotrun.hasResult"
+        },
+        {
+          "command": "spotrun.submitInstruction",
+          "when": "false"
+        },
+        {
+          "command": "spotrun.clearInstruction",
+          "when": "false"
         }
       ],
       "editor/context": [
@@ -201,6 +232,11 @@
           "command": "spotrun.run",
           "when": "editorLangId == python",
           "group": "navigation@90"
+        },
+        {
+          "command": "spotrun.describe",
+          "when": "editorLangId == python",
+          "group": "navigation@91"
         }
       ],
       "editor/title": [
@@ -262,6 +298,20 @@
           "command": "spotrun.unpin",
           "when": "view == spotrun.panel && viewItem =~ /^spotrun\\.(arg|fake)\\.pinned$/",
           "group": "inline@2"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "spotrun.submitInstruction",
+          "group": "inline",
+          "when": "commentController == spotrun"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "spotrun.clearInstruction",
+          "group": "navigation",
+          "when": "commentController == spotrun"
         }
       ]
     },
@@ -345,6 +395,9 @@
           "description": "Save the file before running. The function is imported from disk, so unsaved edits are otherwise ignored."
         }
       }
+    },
+    "configurationDefaults": {
+      "comments.openView": "never"
     }
   },
   "scripts": {
