@@ -1,0 +1,368 @@
+{
+  "name": "spotrun",
+  "displayName": "Spot Run",
+  "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
+  "version": "0.1.0",
+  "publisher": "kareemlsd",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kareemlsd/spotrun.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Testing",
+    "AI"
+  ],
+  "keywords": [
+    "python",
+    "debug",
+    "copilot",
+    "language model",
+    "trace"
+  ],
+  "activationEvents": [
+    "onLanguage:python"
+  ],
+  "main": "./dist/extension.js",
+  "icon": "media/icon.png",
+  "contributes": {
+    "commands": [
+      {
+        "command": "spotrun.run",
+        "title": "Run Function at Cursor",
+        "category": "Spot Run",
+        "icon": "$(play)"
+      },
+      {
+        "command": "spotrun.regenerate",
+        "title": "Run with New Inputs",
+        "category": "Spot Run",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "spotrun.stepOver",
+        "title": "Step Over",
+        "category": "Spot Run",
+        "icon": "$(debug-step-over)"
+      },
+      {
+        "command": "spotrun.stepInto",
+        "title": "Step Into",
+        "category": "Spot Run",
+        "icon": "$(debug-step-into)"
+      },
+      {
+        "command": "spotrun.stepOut",
+        "title": "Step Out",
+        "category": "Spot Run",
+        "icon": "$(debug-step-out)"
+      },
+      {
+        "command": "spotrun.stepBack",
+        "title": "Step Back",
+        "category": "Spot Run",
+        "icon": "$(debug-step-back)"
+      },
+      {
+        "command": "spotrun.restart",
+        "title": "Go to First Step",
+        "category": "Spot Run",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "spotrun.toEnd",
+        "title": "Go to End",
+        "category": "Spot Run",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "spotrun.stop",
+        "title": "Stop",
+        "category": "Spot Run",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "spotrun.debug",
+        "title": "Open This Run in the Debugger",
+        "category": "Spot Run",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "spotrun.editValue",
+        "title": "Edit and Pin Value",
+        "category": "Spot Run",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "spotrun.unpin",
+        "title": "Unpin Value",
+        "category": "Spot Run",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "spotrun.forget",
+        "title": "Forget Inputs and Pins for This Function",
+        "category": "Spot Run",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "spotrun.selectModel",
+        "title": "Select Language Model",
+        "category": "Spot Run"
+      },
+      {
+        "command": "spotrun.showLog",
+        "title": "Show Log",
+        "category": "Spot Run"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "spotrun.run",
+        "key": "ctrl+alt+enter",
+        "mac": "cmd+alt+enter",
+        "when": "editorTextFocus && editorLangId == python"
+      },
+      {
+        "command": "spotrun.stepOver",
+        "key": "f10",
+        "when": "spotrun.replayActive && !inDebugMode"
+      },
+      {
+        "command": "spotrun.stepInto",
+        "key": "f11",
+        "when": "spotrun.replayActive && !inDebugMode"
+      },
+      {
+        "command": "spotrun.stepOut",
+        "key": "shift+f11",
+        "when": "spotrun.replayActive && !inDebugMode"
+      },
+      {
+        "command": "spotrun.stepBack",
+        "key": "shift+f10",
+        "when": "spotrun.replayActive && !inDebugMode"
+      },
+      {
+        "command": "spotrun.stop",
+        "key": "escape",
+        "when": "spotrun.replayActive && editorTextFocus && !inDebugMode && !suggestWidgetVisible && !findWidgetVisible && !parameterHintsVisible && !inSnippetMode && !editorHasSelection && !editorHasMultipleSelections && !renameInputVisible && !inlineSuggestionVisible && !notificationToastsVisible && !codeActionMenuVisible"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "spotrun.editValue",
+          "when": "false"
+        },
+        {
+          "command": "spotrun.unpin",
+          "when": "false"
+        },
+        {
+          "command": "spotrun.stepOver",
+          "when": "spotrun.replayActive"
+        },
+        {
+          "command": "spotrun.stepInto",
+          "when": "spotrun.replayActive"
+        },
+        {
+          "command": "spotrun.stepOut",
+          "when": "spotrun.replayActive"
+        },
+        {
+          "command": "spotrun.stepBack",
+          "when": "spotrun.replayActive"
+        },
+        {
+          "command": "spotrun.restart",
+          "when": "spotrun.replayActive"
+        },
+        {
+          "command": "spotrun.toEnd",
+          "when": "spotrun.replayActive"
+        },
+        {
+          "command": "spotrun.debug",
+          "when": "spotrun.hasResult"
+        },
+        {
+          "command": "spotrun.regenerate",
+          "when": "editorLangId == python || spotrun.hasResult"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "spotrun.run",
+          "when": "editorLangId == python",
+          "group": "navigation@90"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "spotrun.stepBack",
+          "when": "spotrun.replayActive && editorLangId == python",
+          "group": "navigation@1"
+        },
+        {
+          "command": "spotrun.stepOver",
+          "when": "spotrun.replayActive && editorLangId == python",
+          "group": "navigation@2"
+        },
+        {
+          "command": "spotrun.stepInto",
+          "when": "spotrun.replayActive && editorLangId == python",
+          "group": "navigation@3"
+        },
+        {
+          "command": "spotrun.stepOut",
+          "when": "spotrun.replayActive && editorLangId == python",
+          "group": "navigation@4"
+        },
+        {
+          "command": "spotrun.regenerate",
+          "when": "spotrun.replayActive && editorLangId == python",
+          "group": "navigation@5"
+        },
+        {
+          "command": "spotrun.stop",
+          "when": "spotrun.replayActive && editorLangId == python",
+          "group": "navigation@6"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "spotrun.regenerate",
+          "when": "view == spotrun.panel && spotrun.hasResult",
+          "group": "navigation@1"
+        },
+        {
+          "command": "spotrun.debug",
+          "when": "view == spotrun.panel && spotrun.hasResult",
+          "group": "navigation@2"
+        },
+        {
+          "command": "spotrun.forget",
+          "when": "view == spotrun.panel && spotrun.hasResult",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "spotrun.editValue",
+          "when": "view == spotrun.panel && viewItem =~ /^spotrun\\.(arg|fake)/",
+          "group": "inline@1"
+        },
+        {
+          "command": "spotrun.unpin",
+          "when": "view == spotrun.panel && viewItem =~ /^spotrun\\.(arg|fake)\\.pinned$/",
+          "group": "inline@2"
+        }
+      ]
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "spotrun.panel",
+          "name": "Spot Run",
+          "icon": "$(play-circle)",
+          "when": "spotrun.hasResult",
+          "visibility": "visible"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Spot Run",
+      "properties": {
+        "spotrun.useLanguageModel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask a language model (GitHub Copilot or any other provider registered in VS Code) for realistic inputs and fake return values. When off, or when no model is available, built-in sample values based on names and type hints are used."
+        },
+        "spotrun.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model to use, matched against the model's family, id or name (for example `gpt-4o-mini`). Leave empty to pick the smallest fast model that is available. Use the command **Spot Run: Select Language Model** to choose from a list."
+        },
+        "spotrun.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter used to run functions. Leave empty to use the interpreter selected in the Python extension."
+        },
+        "spotrun.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a Spot Run action above each function."
+        },
+        "spotrun.scope": {
+          "type": "string",
+          "enum": [
+            "workspace",
+            "file",
+            "function"
+          ],
+          "enumDescriptions": [
+            "Record the function and every function it calls in your workspace.",
+            "Record the function and functions it calls in the same file.",
+            "Record only the function itself."
+          ],
+          "default": "workspace",
+          "description": "Which code is recorded so that you can step into it."
+        },
+        "spotrun.startAt": {
+          "type": "string",
+          "enum": [
+            "first",
+            "end"
+          ],
+          "enumDescriptions": [
+            "Stop on the first line, like a breakpoint at the top of the function.",
+            "Show the finished run with every value filled in."
+          ],
+          "default": "first",
+          "description": "Where the replay starts after a run. Runs that raise always start at the failing line."
+        },
+        "spotrun.timeoutSeconds": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Stop a run that takes longer than this. Time spent waiting for the language model does not count."
+        },
+        "spotrun.maxModelCalls": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Upper bound on language model requests for fake values in one run. Further fakes use built-in sample values."
+        },
+        "spotrun.saveBeforeRun": {
+          "type": "boolean",
+          "default": true,
+          "description": "Save the file before running. The function is imported from disk, so unsaved edits are otherwise ignored."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test:unit": "tsc -p tsconfig.test.json && node --test out/test/core.test.js",
+    "test:python": "python3 -m pytest tests -q",
+    "test": "npm run typecheck && npm run test:unit && npm run test:python",
+    "package": "npm run build -- --production && vsce package --no-dependencies --skip-license",
+    "vscode:prepublish": "npm run build -- --production",
+    "test:e2e": "node e2e/run.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "~1.95.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}

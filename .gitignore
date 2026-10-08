@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+*.vsix
+__pycache__/
+*.pyc
+.pytest_cache/
+.vscode-test/
+e2e/out/

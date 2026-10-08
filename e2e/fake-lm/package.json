@@ -1,0 +1,14 @@
+{
+  "name": "spotrun-fake-lm",
+  "displayName": "Spot Run test model",
+  "description": "Registers a canned language model so Spot Run's model path can be exercised without GitHub Copilot.",
+  "version": "0.0.1",
+  "publisher": "kareemlsd",
+  "private": true,
+  "engines": { "vscode": "^1.104.0" },
+  "activationEvents": ["onStartupFinished", "onLanguageModelChatProvider:spotrun-fake"],
+  "main": "./extension.js",
+  "contributes": {
+    "languageModelChatProviders": [{ "vendor": "spotrun-fake", "displayName": "Spot Run test model" }]
+  }
+}
