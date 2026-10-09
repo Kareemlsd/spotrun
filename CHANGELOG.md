@@ -1,5 +1,9 @@
 # Changelog
 
+## MCP server 0.1.0
+
+- New: `spotrun-mcp`, the engine as an MCP server for coding agents, in `python/`. Tools: `run_function`, `find_edge_cases`, `answer_value`. Inputs and fake values come from a configured small model, from the calling agent, or from guesses. Runs require an OS sandbox by default. The extension itself is unchanged at 0.7.1.
+
 ## 0.7.1
 
 - Marked as a preview: verified on Linux with a scripted model; run **Spot Run: Self-Check** on your own setup.

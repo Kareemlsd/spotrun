@@ -16,6 +16,7 @@ The demos on this page were recorded in VS Code with a scripted demo model, so t
 - [Safety](#safety)
 - [Check your setup](#check-your-setup)
 - [When importing the file fails](#when-importing-the-file-fails)
+- [Use it from a coding agent (MCP)](#use-it-from-a-coding-agent-mcp)
 - [Limits you should know](#limits-you-should-know)
 - [Settings](#settings)
 - [Development](#development)
@@ -148,6 +149,18 @@ The function is imported from its file before it can run, so anything that goes 
 
 Handled automatically: regular packages, packages without `__init__.py` that use relative imports, a `src/` folder, and source roots below the workspace folder.
 
+## Use it from a coding agent (MCP)
+
+The same engine is available as an MCP server, so a coding agent (Claude Code, GitHub Copilot agent mode, Cursor and others) can run a function and read what happened: the outcome, the lines that ran and did not run, the final variables, and what was faked. It is a separate Python package in [`python/`](python/README.md) and does not need the extension.
+
+```
+claude mcp add spotrun -- uvx --from "git+https://github.com/Kareemlsd/spotrun#subdirectory=python" spotrun-mcp
+```
+
+The agent gets three tools: `run_function`, `find_edge_cases` and `answer_value`. Inputs and fake values come from a small model when you configure one (`SPOTRUN_MODEL`, any OpenAI-compatible endpoint including a local Ollama model, or the Anthropic API). Without one the agent supplies the arguments, and a run pauses to ask it what a faked dependency should be.
+
+Because an agent calls it unattended, the server refuses to run without an OS sandbox unless you set `SPOTRUN_SANDBOX=auto`. Configuration for other clients, all settings and the limits are in [python/README.md](python/README.md).
+
 ## Limits you should know
 
 - Fakes return plausible data, not true data. Spot Run does not tell you whether a query is correct against the real schema.
@@ -194,6 +207,7 @@ npm run package        # build the .vsix
 Layout:
 
 - `python/spotrun_runtime/` is the runtime, standard library only. `fakes.py` has the lazy fake, `guard.py` the patch table and audit hook, `tracer.py` the recorder, `runner.py` the orchestration and the JSON-lines protocol with the extension.
+- `python/spotrun_mcp/` is the MCP server, also standard library only: `server.py` speaks the protocol, `engine.py` drives the runtime and decides who invents values, `report.py` writes what the agent reads. Its prompts mirror `src/core/prompts.ts`. Covered by `tests/test_mcp.py`.
 - `src/core/` is editor-independent TypeScript: the function parser, the replay model, the prompts, the process bridge, the sandbox, the lookup loop for Dig deep and the test writer. It is covered by `test/core.test.ts`, which also drives the real runtime.
 - `src/*.ts` is the VS Code layer: commands, decorations, the panel, the Language Model API bridge.
 - `tests/` holds the pytest suite for the runtime and its sample modules.

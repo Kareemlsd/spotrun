@@ -18,3 +18,8 @@ docs/build_media.py
 docs/media/*.png
 !docs/media/panel.png
 docs/media/*.mp4
+python/spotrun_mcp/**
+python/pyproject.toml
+python/README.md
+python/*.egg-info/**
+python/build/**

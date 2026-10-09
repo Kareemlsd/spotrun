@@ -7,3 +7,5 @@ __pycache__/
 .pytest_cache/
 .vscode-test/
 e2e/out/
+python/build/
+*.egg-info/

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spotrun-mcp"
+version = "0.1.0"
+description = "MCP server that lets coding agents run a Python function with invented inputs and faked external dependencies, inside a sandbox."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Kareem El Sayed" }]
+keywords = ["mcp", "testing", "agents", "python", "sandbox"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Kareemlsd/spotrun"
+Issues = "https://github.com/Kareemlsd/spotrun/issues"
+
+[project.scripts]
+spotrun-mcp = "spotrun_mcp.server:main"
+
+[tool.setuptools]
+packages = ["spotrun_runtime", "spotrun_mcp"]
+py-modules = ["spotrun_main"]
