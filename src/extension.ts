@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -8,6 +9,7 @@ import { findByQualname, functionAt, parsePythonFunctions, PyFunction, signature
 import { ReplayModel, truncate } from "./core/replayModel";
 import { Handlers, RunError } from "./core/runtimeProcess";
 import { buildRequest, runWithRetries, RunSpec } from "./core/session";
+import { buildTestsPrompt, gatherRepoContext, mergeTests, parseTestsReply, scenarioFromResult, TestScenario, validateTestPath } from "./core/tests";
 import { EdgeCase, emptyFunctionData, FunctionData, NeedArgs, NeedValue, RunResult } from "./core/types";
 import { InputChat } from "./inputChat";
 import { resolvePython } from "./interpreter";
@@ -89,6 +91,7 @@ class Controller implements vscode.Disposable {
     register("spotrun.editValue", (node?: Node) => this.editValue(node));
     register("spotrun.unpin", (node?: Node) => this.unpin(node));
     register("spotrun.forget", () => this.forget());
+    register("spotrun.writeTests", () => this.guarded(() => this.writeTests()));
     register("spotrun.edgeCases", (uri?: vscode.Uri, qualname?: string) => this.edgeCases(uri, qualname));
     register("spotrun.showEdgeCase", (index: number) => this.guarded(() => this.showCase(index)));
     register("spotrun.nextEdgeCase", () => this.guarded(() => this.stepCase(1)));
@@ -217,6 +220,11 @@ class Controller implements vscode.Disposable {
             arguments: [document.uri, fn.qualname],
           }),
           new vscode.CodeLens(range, { title: "$(refresh) New inputs", command: "spotrun.regenerate", arguments: [document.uri, fn.qualname] }),
+          new vscode.CodeLens(range, {
+            title: "$(checklist) Write tests",
+            tooltip: "Turn the runs you have looked at into test functions in your codebase",
+            command: "spotrun.writeTests",
+          }),
           new vscode.CodeLens(range, { title: "$(debug-stop) Stop", command: "spotrun.stop" }),
         );
       }
@@ -597,6 +605,230 @@ class Controller implements vscode.Disposable {
     this.lensChanged.fire();
     await this.view.reveal();
     this.updateStatus();
+  }
+
+  // ----------------------------------------------------------- write tests
+
+  /** Runs a short Python command and returns its combined output. */
+  private runPython(python: string, args: string[], cwd: string, input?: string, timeoutMs = 120000): Promise<{ code: number | null; output: string }> {
+    return new Promise((resolve) => {
+      const child = spawn(python, args, { cwd, env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" }, windowsHide: true });
+      let output = "";
+      const timer = setTimeout(() => child.kill(), timeoutMs);
+      child.stdout.on("data", (chunk) => (output += chunk));
+      child.stderr.on("data", (chunk) => (output += chunk));
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        resolve({ code: null, output: String(error) });
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code, output });
+      });
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(input ?? "");
+    });
+  }
+
+  private async writeTests(): Promise<void> {
+    const current = this.current;
+    if (!current) {
+      void vscode.window.showInformationMessage("Spot Run: run a function first. The tests are written from the runs you have looked at.");
+      return;
+    }
+    if (!(await this.llm.pick())) {
+      void vscode.window.showWarningMessage("Spot Run: writing tests needs a language model, and none is available.");
+      return;
+    }
+    const { target, key, spec, python } = current;
+    const root = spec.root;
+
+    // Which runs become tests: the edge cases when there are any, else the run on screen.
+    type Candidate = { title: string; result: RunResult };
+    const candidates: Candidate[] = [];
+    const cases = this.casesOf(target);
+    if (cases.length > 0) {
+      this.status.text = `$(loading~spin) Spot Run: ${target.qualname} · preparing cases`;
+      for (let index = 0; index < cases.length; index++) {
+        if (!this.caseRuns.has(`${key}#${index}`)) {
+          await this.run(target, false, undefined, false, { index, quiet: true });
+        }
+        const run = this.caseRuns.get(`${key}#${index}`);
+        if (run) {
+          candidates.push({ title: cases[index].title, result: run.model.result });
+        }
+      }
+      this.updateStatus();
+    }
+    if (current.caseIndex === undefined) {
+      candidates.unshift({ title: cases.length > 0 ? "Normal run" : "Typical case", result: current.model.result });
+    }
+    const usable: { title: string; scenario: TestScenario; result: RunResult }[] = [];
+    const unusable: string[] = [];
+    for (const candidate of candidates) {
+      const scenario = scenarioFromResult(candidate.title, candidate.result);
+      if (typeof scenario === "string") {
+        unusable.push(`${candidate.title} (${scenario})`);
+      } else {
+        usable.push({ title: candidate.title, scenario, result: candidate.result });
+      }
+    }
+    if (usable.length === 0) {
+      void vscode.window.showWarningMessage(`Spot Run: none of the runs can become a test: ${unusable.join(", ")}.`);
+      return;
+    }
+    let chosen = usable;
+    if (usable.length > 1) {
+      const picked = await vscode.window.showQuickPick(
+        usable.map((u) => ({ label: u.title, description: truncate(outcomeOf(u.result), 70), picked: true, entry: u })),
+        { canPickMany: true, title: `Write tests for ${target.qualname}`, placeHolder: "Each selected run becomes one test that asserts what you saw" },
+      );
+      if (!picked || picked.length === 0) {
+        return;
+      }
+      chosen = picked.map((p) => p.entry);
+    }
+
+    const document = await vscode.workspace.openTextDocument(target.uri);
+    const text = document.getText();
+    const fn = findByQualname(parsePythonFunctions(text), target.qualname);
+    if (!fn) {
+      return;
+    }
+    const relativePath = path.relative(root, target.uri.fsPath).split(path.sep).join("/");
+    this.batch?.cancel();
+    const batch = new vscode.CancellationTokenSource();
+    this.batch = batch;
+    this.status.text = `$(loading~spin) Spot Run: ${target.qualname} · writing tests`;
+    this.status.show();
+    try {
+      const host = createFsHost(root);
+      const repo = await gatherRepoContext(host, relativePath, fn.name);
+      const prompt = buildTestsPrompt({
+        relativePath,
+        module: current.model.result.module,
+        qualname: target.qualname,
+        functionSource: sourceOf(text, fn),
+        scenarios: chosen.map((c) => c.scenario),
+        repo,
+      });
+      this.log.appendLine(`\n── ${target.qualname}: writing ${chosen.length} test${chosen.length === 1 ? "" : "s"} (${repo.testFiles.length} existing test files seen${repo.related ? `, ${repo.related.path} already covers this module` : ""})`);
+
+      let original: string | undefined;
+      let fileUri: vscode.Uri | undefined;
+      let summary = "";
+      let passed = false;
+      let merged: ReturnType<typeof mergeTests> | undefined;
+      let relative = "";
+      let conversation = [{ role: "user" as const, text: prompt }] as { role: "user" | "assistant"; text: string }[];
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const reply = await this.llm.converse(conversation, batch.token, 90000);
+        if (batch.token.isCancellationRequested) {
+          return;
+        }
+        const answer = reply === undefined ? undefined : parseTestsReply(reply);
+        const valid = answer ? validateTestPath(answer.file) : undefined;
+        if (!answer || !valid) {
+          this.log.appendLine(`   the model's reply was not usable: ${truncate(reply ?? "(no reply)", 400)}`);
+          if (attempt === 0) {
+            void vscode.window.showWarningMessage("Spot Run: the model did not return usable tests. See Spot Run: Show Log.");
+            return;
+          }
+          break;
+        }
+        if (attempt === 0) {
+          relative = valid;
+          fileUri = vscode.Uri.file(path.join(root, ...relative.split("/")));
+          try {
+            original = (await vscode.workspace.openTextDocument(fileUri)).getText();
+          } catch {
+            original = undefined;
+          }
+          this.log.appendLine(`   target file: ${relative}${original === undefined ? " (new)" : " (existing, appending)"}${answer.reason ? ` · ${answer.reason}` : ""}`);
+        }
+        const candidate = mergeTests(original, answer.imports, answer.code);
+        const syntax = await this.runPython(python, ["-c", "import ast, sys; ast.parse(sys.stdin.read())"], root, candidate.text, 20000);
+        if (syntax.code !== 0) {
+          this.log.appendLine(`   the generated tests are not valid Python:\n${syntax.output.trim().split("\n").slice(-4).join("\n")}`);
+          if (attempt === 0) {
+            conversation = [...conversation, { role: "assistant", text: reply ?? "" }, { role: "user", text: `That code is not valid Python:\n${syntax.output.slice(-800)}\nReply with the corrected JSON, same format and same file.` }];
+            continue;
+          }
+          break;
+        }
+        merged = candidate;
+
+        // Write, then check the new tests under a guard that refuses real side effects.
+        const edit = new vscode.WorkspaceEdit();
+        if (original === undefined) {
+          edit.createFile(fileUri!, { ignoreIfExists: true });
+        }
+        await vscode.workspace.applyEdit(edit);
+        const testDocument = await vscode.workspace.openTextDocument(fileUri!);
+        const replace = new vscode.WorkspaceEdit();
+        replace.replace(fileUri!, new vscode.Range(0, 0, testDocument.lineCount, 0), merged.text);
+        await vscode.workspace.applyEdit(replace);
+        await testDocument.save();
+
+        const selector = merged.names.join(" or ");
+        const extra = (spec.extraPaths ?? []).flatMap((p) => ["--path", p]);
+        const run = await this.runPython(python, [this.mainScript(), "--pytest", fileUri!.fsPath, "--root", root, ...extra, ...(selector ? ["-k", selector] : [])], root);
+        const lines = run.output.trim().split("\n");
+        if (run.output.includes("SPOTRUN_PYTEST_MISSING")) {
+          summary = "not checked, because pytest is not installed in this interpreter";
+          passed = true;
+          break;
+        }
+        summary = lines.filter((l) => /\b(passed|failed|error|errors)\b/.test(l) && /\bin [\d.]+s/.test(l)).pop()?.replace(/=+/g, "").trim() ?? "could not be run";
+        passed = /SPOTRUN_PYTEST_EXIT 0\b/.test(run.output);
+        this.log.appendLine(`   check ${attempt + 1}: ${summary}`);
+        if (passed) {
+          break;
+        }
+        this.log.appendLine(run.output.trim().split("\n").slice(-60).join("\n"));
+        if (attempt === 0) {
+          this.status.text = `$(loading~spin) Spot Run: ${target.qualname} · fixing tests`;
+          conversation = [
+            ...conversation,
+            { role: "assistant", text: reply ?? "" },
+            {
+              role: "user",
+              text: `Running those tests gave:\n${run.output.slice(-3500)}\n\nThe observed runs are correct, so the tests are wrong (usually a mock that is incomplete or patched in the wrong place; a real network or file access is refused). Reply with the corrected JSON, same format and same file.`,
+            },
+          ];
+        }
+      }
+
+      if (!merged || !fileUri) {
+        void vscode.window.showWarningMessage("Spot Run: the model did not produce valid test code. Nothing was written. See Spot Run: Show Log.");
+        return;
+      }
+      const editor = await vscode.window.showTextDocument(fileUri, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+      const line = Math.min(merged.line, editor.document.lineCount - 1);
+      editor.revealRange(new vscode.Range(line, 0, line, 0), vscode.TextEditorRevealType.AtTop);
+      editor.selection = new vscode.Selection(line, 0, line, 0);
+      const count = merged.names.length;
+      const where = `${merged.created ? "new file " : ""}${relative}`;
+      const skipped = unusable.length > 0 ? ` Left out: ${unusable.join(", ")}.` : "";
+      if (passed) {
+        void vscode.window.showInformationMessage(`Spot Run wrote ${count} test${count === 1 ? "" : "s"} to ${where}: ${summary}.${skipped}`);
+      } else {
+        const choice = await vscode.window.showWarningMessage(
+          `Spot Run wrote ${count} test${count === 1 ? "" : "s"} to ${where}, but they do not all pass yet: ${summary}. They assert what you observed, so the usual cause is an incomplete mock.${skipped}`,
+          "Show Log",
+        );
+        if (choice) {
+          this.log.show();
+        }
+      }
+    } finally {
+      if (this.batch === batch) {
+        this.batch = undefined;
+      }
+      batch.dispose();
+      this.updateStatus();
+    }
   }
 
   // ------------------------------------------------------------ edge cases

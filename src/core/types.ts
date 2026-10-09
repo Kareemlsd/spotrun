@@ -104,6 +104,8 @@ export interface RunResult {
   written_files: string[];
   imports?: string[];
   import_errors?: string[];
+  /** Dotted name the file was imported as. */
+  module?: string;
 }
 
 /** Generated arguments, with the imports their expressions rely on. */

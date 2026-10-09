@@ -39,6 +39,14 @@ Click **Edge cases** above a function that has been run, or use the command **Sp
 
 Pick a case to step through it like any other run. `Ctrl+Alt+]` and `Ctrl+Alt+[` move to the next and previous case, and the Spot Run panel lists them under **Edge cases** for one-click switching. Finding the cases is one model request; they are remembered for the function until its signature changes, so opening the list again is free. A case can carry a one-sentence scenario such as "the API answers 404", which steers the fake values of that case.
 
+### Writing tests
+
+When the runs look right, click **Write tests** above the function, or use **Spot Run: Write Tests from These Runs**. Each run you select (the edge cases, or the run on screen when there are none) becomes one test that reproduces it: the same arguments, mocks for the calls Spot Run intercepted, and an assertion on the result or exception you saw.
+
+The model decides where the tests belong. It is given the list of existing test files, the test configuration (`pytest.ini`, the pytest sections of `pyproject.toml`, `conftest.py`), the file that already tests this module if there is one, and another test file as an example of the project's style. It appends to the existing file for the module, or creates a new one following the project's naming and folder pattern. Nothing existing is overwritten: missing imports are added after the current ones, tests go at the end, and a name that is taken gets a suffix.
+
+After writing, the new tests are run once with `pytest` under a guard that refuses real network, process and file effects, so a test whose mocks are incomplete fails instead of reaching the outside world. If they fail, the model gets the output and one chance to correct them. The notification then says how many pass. The file opens beside your code; it is saved, so use undo or your version control to drop it.
+
 ### Dig deep
 
 For functions whose signature says little about the data (untyped parameters, dicts with a particular shape, objects defined elsewhere), click **Dig deep** above a function that has been run, or use the command **Spot Run: Dig Deep**. The model may then look through your workspace before it proposes inputs: it can search, read parts of files, fetch a definition, or list call sites. It answers with arguments, the imports those arguments need for types from other modules, and a short note on the data shapes it found, which is reused when fake values are invented. The Spot Run panel lists every lookup under **Dug deep**.

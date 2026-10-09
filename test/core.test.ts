@@ -5,6 +5,7 @@ import { buildArgsPrompt, buildCasesPrompt, buildContext, buildValuePrompt, extr
 import { findByQualname, functionAt, parsePythonFunctions, signatureOf, sourceOf } from "../src/core/pythonFunctions";
 import { formatWrites, ReplayModel } from "../src/core/replayModel";
 import { createFsHost, dig, parseDigReply, runLookup } from "../src/core/dig";
+import { buildTestsPrompt, gatherRepoContext, mergeTests, parseTestsReply, scenarioFromResult, slug, testNames, validateTestPath } from "../src/core/tests";
 import { Handlers } from "../src/core/runtimeProcess";
 import { absorb, runWithRetries, RunSpec } from "../src/core/session";
 import { emptyFunctionData, RunResult } from "../src/core/types";
@@ -559,4 +560,136 @@ test("runtime: each edge case runs with its own inputs and no argument request",
     outcomes.push(result.exception ? result.exception.type : (result.return ?? ""));
   }
   assert.deepEqual(outcomes, ["45.0", "0.0", "TypeError"]);
+});
+
+// -------------------------------------------------------------- write tests
+
+test("tests: a run becomes a scenario, unusable runs give a reason", () => {
+  const result = trace();
+  result.args = [
+    { name: "url", expr: "'https://x'", source: "llm" },
+    { name: "retries", expr: "3", source: "default" },
+    { name: "session", expr: null, value: "<fake session>", source: "heuristic" },
+  ];
+  result.effects = [
+    { kind: "faked", what: "requests.get('https://x')", step: 0, file: null, line: 1 },
+    { kind: "faked", what: "requests.get('https://x')", step: 1, file: null, line: 1 },
+  ];
+  result.resolutions = [{ key: "k", path: "requests.get('https://x').status_code", op: "eq", expr: "200", source: "llm", value: "200", file: null, line: 1, text: "", step: 0 }];
+  const scenario = scenarioFromResult("Typical", result);
+  assert.deepEqual(scenario, {
+    title: "Typical",
+    args: [
+      { name: "url", expr: "'https://x'" },
+      { name: "session", expr: "<fake session>" },
+    ],
+    imports: [],
+    faked: ["requests.get('https://x')"],
+    invented: [{ path: "requests.get('https://x').status_code", value: "200" }],
+    outcome: { kind: "return", value: "7" },
+  });
+  result.exception = { type: "ValueError", message: "bad", blocked: false, frames: [] };
+  assert.deepEqual((scenarioFromResult("Raises", result) as { outcome: unknown }).outcome, { kind: "raise", type: "ValueError", message: "bad" });
+  result.exception.blocked = true;
+  assert.equal(scenarioFromResult("Blocked", result), "it was stopped at a real side effect");
+  assert.equal(scenarioFromResult("Fatal", { ...result, fatal: "x" }), "it could not be run");
+});
+
+test("tests: repository context finds the existing test file, conventions and config", async () => {
+  const fsn = require("node:fs") as typeof import("node:fs");
+  const dir = fsn.mkdtempSync(path.join(require("node:os").tmpdir(), "spotrun-tests-"));
+  const write = (rel: string, text: string) => {
+    fsn.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fsn.writeFileSync(path.join(dir, rel), text);
+  };
+  write("src/shop/pricing.py", "def total(prices):\n    return sum(prices)\n");
+  write("src/shop/basket.py", "def add():\n    pass\n");
+  write("tests/shop/test_pricing.py", "from shop.pricing import total\n\n\ndef test_total_basic():\n    assert total([1]) == 1\n");
+  write("tests/shop/test_basket.py", "import pytest\nfrom shop.basket import add\n\n\ndef test_add():\n    add()\n");
+  write("tests/conftest.py", "import pytest\n\n\n@pytest.fixture\ndef basket():\n    return []\n");
+  write("pyproject.toml", "[project]\nname = 'shop'\n\n[tool.pytest.ini_options]\ntestpaths = ['tests']\n\n[tool.black]\nline-length = 100\n");
+  const repo = await gatherRepoContext(createFsHost(dir), "src/shop/pricing.py", "total");
+  assert.deepEqual(repo.testFiles, ["tests/conftest.py", "tests/shop/test_basket.py", "tests/shop/test_pricing.py"]);
+  assert.deepEqual(repo.sourceFolders, ["src/shop"]);
+  assert.equal(repo.related?.path, "tests/shop/test_pricing.py");
+  assert.match(repo.related!.text, /test_total_basic/);
+  assert.equal(repo.sample?.path, "tests/shop/test_basket.py");
+  const pyproject = repo.config.find((c) => c.path === "pyproject.toml")!;
+  assert.match(pyproject.text, /testpaths/);
+  assert.doesNotMatch(pyproject.text, /black|name = 'shop'/);
+  assert.ok(repo.config.some((c) => c.path === "tests/conftest.py" && /def basket/.test(c.text)));
+
+  const none = await gatherRepoContext(createFsHost(dir), "src/shop/unknown.py", "nothing_calls_this");
+  assert.equal(none.related, undefined);
+
+  const prompt = buildTestsPrompt({
+    relativePath: "src/shop/pricing.py",
+    module: "shop.pricing",
+    qualname: "total",
+    functionSource: "def total(prices):\n    return sum(prices)",
+    scenarios: [
+      { title: "Empty price list", args: [{ name: "prices", expr: "[]" }], imports: [], faked: [], invented: [], outcome: { kind: "return", value: "0" } },
+      { title: "Text!", args: [{ name: "prices", expr: "['a']" }], imports: [], faked: ["db.query()"], invented: [{ path: "db.query()", value: "[1]" }], outcome: { kind: "raise", type: "TypeError", message: "no" } },
+    ],
+    repo,
+  });
+  assert.match(prompt, /importable as module `shop\.pricing`/);
+  assert.match(prompt, /suggested test name: test_total_empty_price_list/);
+  assert.match(prompt, /observed result: returned 0/);
+  assert.match(prompt, /observed result: raised TypeError: no/);
+  assert.match(prompt, /must mock these\):\n {4}db\.query\(\)/);
+  assert.match(prompt, /already tests the module[^]*tests\/shop\/test_pricing\.py/);
+  assert.match(prompt, /- tests\/shop\/test_basket\.py/);
+  assert.equal(slug("  API answers 404! "), "api_answers_404");
+});
+
+test("tests: the reply is parsed, imports are separated, paths are validated", () => {
+  const answer = parseTestsReply(
+    JSON.stringify({ file: "./tests/test_pure.py", imports: ["import pytest", "from pure import total\nimport pytest", "x = 1"], code: "```python\nimport math\n\ndef test_a():\n    assert total([]) == 0\n```", reason: "no tests yet" }),
+  )!;
+  assert.equal(answer.file, "./tests/test_pure.py");
+  assert.deepEqual(answer.imports, ["import pytest", "from pure import total", "import math"]);
+  assert.equal(answer.code, "def test_a():\n    assert total([]) == 0\n");
+  assert.equal(parseTestsReply('{"file": "a.py", "code": "  "}'), undefined);
+  assert.equal(parseTestsReply("nope"), undefined);
+
+  assert.equal(validateTestPath("./tests/test_pure.py"), "tests/test_pure.py");
+  assert.equal(validateTestPath("tests\\sub\\test_x.py"), "tests/sub/test_x.py");
+  for (const bad of ["../test_x.py", "/etc/test_x.py", "C:/x/test_x.py", "tests/.hidden/test_x.py", "tests/test_x.txt", "tests/a b.py", "tests//x.py"]) {
+    assert.equal(validateTestPath(bad), undefined, bad);
+  }
+});
+
+test("tests: merging never overwrites and keeps names unique", () => {
+  const created = mergeTests(undefined, ["import pytest", "from pure import total"], "def test_a():\n    pass\n\n");
+  assert.equal(created.text, "import pytest\nfrom pure import total\n\n\ndef test_a():\n    pass\n");
+  assert.deepEqual([created.names, created.line, created.created], [["test_a"], 4, true]);
+
+  const existing = [
+    '"""Docstring."""',
+    "import os",
+    "from pure import (",
+    "    total,",
+    ")",
+    "",
+    "",
+    "def test_a():",
+    "    assert total([1.0]) == 1.2",
+    "",
+    "",
+    "def helper():",
+    "    import json",
+    "",
+  ].join("\n");
+  const merged = mergeTests(existing, ["import os", "import pytest"], "def test_a():\n    assert test_a is not None\n\n\nclass TestMore:\n    def test_b(self):\n        pass\n");
+  const lines = merged.text.split("\n");
+  assert.equal(lines[4], ")");
+  assert.equal(lines[5], "import pytest", "new import goes after the last top-level import, including a parenthesised one");
+  assert.equal(merged.text.match(/^import os$/gm)!.length, 1, "an import that is already there is not repeated");
+  assert.ok(merged.text.includes("def test_a():\n    assert total([1.0]) == 1.2"), "the existing test is untouched");
+  assert.ok(merged.text.includes("def test_a_2():\n    assert test_a_2 is not None"), "the clashing name is renamed consistently");
+  assert.deepEqual(merged.names, ["test_a_2", "TestMore"]);
+  assert.equal(lines[merged.line], "def test_a_2():");
+  assert.equal(merged.created, false);
+  assert.deepEqual(testNames("async def test_x():\n  pass\ndef helper(): pass\nclass TestY: pass\n    def test_inner(self): pass"), ["test_x", "TestY"]);
 });

@@ -733,6 +733,7 @@ def run(request, channel):
         "is_async": inspect.iscoroutinefunction(raw) or inspect.isasyncgenfunction(raw),
         "imports": [i for i in (request.get("imports") or []) if isinstance(i, str)],
         "import_errors": request.get("_import_errors") or [],
+        "module": getattr(module, "__name__", None),
     }
 
     if not tracing:
@@ -781,8 +782,48 @@ def run(request, channel):
     return result
 
 
+def run_tests(argv):
+    """Run pytest on tests Spot Run wrote, with real side effects refused.
+
+    usage: --pytest <test file> --root <folder> [--path <folder>]... [-k <expression>]
+    """
+
+    def value(flag):
+        return argv[argv.index(flag) + 1] if flag in argv else None
+
+    test_file = os.path.abspath(value("--pytest"))
+    root = os.path.abspath(value("--root") or os.path.dirname(test_file))
+    extra = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--path"]
+    os.chdir(root)
+    entries = [root]
+    if os.path.isdir(os.path.join(root, "src")):
+        entries.append(os.path.join(root, "src"))
+    entries.extend(os.path.abspath(os.path.join(root, os.path.expanduser(p))) for p in extra)
+    for entry in reversed(entries):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
+    try:
+        import pytest
+    except ImportError:
+        print("SPOTRUN_PYTEST_MISSING")
+        return 0
+    guard.install_strict()
+    arguments = [test_file, "-q", "--no-header", "-p", "no:cacheprovider", "--tb=short", "-rfE"]
+    if value("-k"):
+        arguments.extend(["-k", value("-k")])
+    guard.arm()
+    try:
+        code = pytest.main(arguments)
+    finally:
+        guard.disarm()
+    print("SPOTRUN_PYTEST_EXIT %d" % int(code))
+    return 0
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--pytest" in argv:
+        return run_tests(argv)
     if "--request" in argv:
         path = argv[argv.index("--request") + 1]
         with open(path, "r", encoding="utf-8") as handle:

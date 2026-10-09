@@ -4,6 +4,29 @@ const vscode = require("vscode");
 const fs = require("fs");
 
 function answer(prompt) {
+  if (prompt.includes("You write unit tests for one Python function") && prompt.includes("Function `total`")) {
+    // The first answer has one wrong expectation, to exercise the repair round.
+    const expected = prompt.includes("Running those tests gave") ? "45.0" : "44.0";
+    return JSON.stringify({
+      file: "tests/test_pure.py",
+      imports: ["import pytest", "from pure import total"],
+      code: [
+        "def test_total_typical_basket():",
+        "    assert total([10.0, 20.0], 0.5) == pytest.approx(" + expected + ")",
+        "",
+        "",
+        "def test_total_empty_price_list():",
+        "    assert total([]) == pytest.approx(0.0)",
+        "",
+        "",
+        "def test_total_text_instead_of_number():",
+        "    with pytest.raises(TypeError):",
+        "        total(['a', 2.0])",
+        "",
+      ].join("\n"),
+      reason: "The project has no tests yet.",
+    });
+  }
   if (prompt.includes("You design a small set of input cases")) {
     if (prompt.includes("Function under test: `total`")) {
       return JSON.stringify({

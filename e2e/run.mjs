@@ -112,7 +112,7 @@ try {
     await page.keyboard.press("Escape");
     await page.keyboard.press("Control+Shift+E");
     await page.waitForSelector(".explorer-folders-view", { timeout: 10000 });
-    await page.locator(".explorer-folders-view .monaco-list-row", { hasText: file }).first().dblclick();
+    await page.locator(".explorer-folders-view .monaco-list-row", { hasText: new RegExp(`^${file.replace(".", "\\.")}$`) }).first().dblclick();
     await page.waitForSelector(`.tab[aria-label*="${file}"]`, { timeout: 15000 });
     await page.waitForTimeout(500);
     await page.keyboard.press("Control+G");
@@ -371,6 +371,29 @@ try {
     await page.waitForFunction(() => [...document.querySelectorAll(".quick-input-widget .monaco-list-row")].some((r) => r.textContent.includes("Find edge cases again")), null, { timeout: 20000 });
     check("opening the list again costs no model request", promptCount() === before);
     await page.keyboard.press("Escape");
+
+    // ---- 8f. write tests from the approved runs
+    before = promptCount();
+    await palette("Spot Run: Write Tests from These Runs");
+    await page.waitForFunction(() => [...document.querySelectorAll(".quick-input-widget .monaco-list-row")].some((r) => r.textContent.includes("Text instead of number")), null, { timeout: 30000 });
+    await shot("22-write-tests-picker");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => [...document.querySelectorAll(".notifications-toasts, .notification-list-item")].some((n) => n.textContent.includes("Spot Run wrote")), null, { timeout: 90000 });
+    const toast = (await page.locator(".notification-list-item", { hasText: "Spot Run wrote" }).first().textContent()) ?? "";
+    check("tests are written to a new file and pass under the guard", toast.includes("3 tests to new file tests/test_pure.py") && toast.includes("3 passed"), toast);
+    check("a failing first attempt was repaired in one more request", promptCount() - before === 2, String(promptCount() - before));
+    const written = fs.existsSync(path.join(workspace, "tests", "test_pure.py")) ? fs.readFileSync(path.join(workspace, "tests", "test_pure.py"), "utf8") : "";
+    check(
+      "the file on disk has the imports and the three tests",
+      written.startsWith("import pytest\nfrom pure import total\n") && written.includes("pytest.approx(45.0)") && (written.match(/^def test_total_/gm) ?? []).length === 3,
+      written.slice(0, 300),
+    );
+    await page.waitForTimeout(800);
+    await shot("23-tests-written");
+    // The test file opened beside and has focus: close it to continue in one editor group.
+    await page.keyboard.press("Control+W");
+    await page.waitForTimeout(400);
+    await page.keyboard.press("Control+1");
 
     await open("effects.py", 12);
     await palette("Spot Run: Edge Cases");

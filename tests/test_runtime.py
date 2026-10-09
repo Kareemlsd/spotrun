@@ -480,3 +480,48 @@ def test_module_outside_the_workspace_needs_extra_paths():
     assert r["return"] == "7"
     r = spot(sample, "val", extra_paths=[os.path.relpath(outside, SAMPLES)])
     assert r["return"] == "7", "paths relative to the workspace folder work too"
+
+
+# ------------------------------------------------- guarded test verification
+
+
+def _guarded_pytest(tmp_path, body, k=None):
+    import subprocess
+
+    from helper import MAIN
+
+    (tmp_path / "mod.py").write_text("import socket\n\n\ndef fetch(host):\n    s = socket.socket()\n    s.connect((host, 9))\n    return 1\n\n\ndef add(a, b):\n    return a + b\n")
+    test_file = tmp_path / "test_mod.py"
+    test_file.write_text(body)
+    command = [sys.executable, MAIN, "--pytest", str(test_file), "--root", str(tmp_path)]
+    if k:
+        command += ["-k", k]
+    done = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    return done.stdout + done.stderr
+
+
+def test_written_tests_run_under_a_guard_that_refuses_real_effects(tmp_path):
+    body = (
+        "from unittest import mock\n"
+        "from mod import add, fetch\n\n\n"
+        "def test_add():\n    assert add(1, 2) == 3\n\n\n"
+        "def test_fetch_mocked():\n"
+        "    with mock.patch('mod.socket.socket') as sock:\n        assert fetch('db.internal') == 1\n    sock.return_value.connect.assert_called_once()\n\n\n"
+        "def test_fetch_unmocked():\n    assert fetch('10.255.255.1') == 1\n\n\n"
+        "def test_writes_outside_scratch():\n    open(LEFT_BEHIND, 'w').write('x')\n\n\n"
+        "def test_tmp_path_is_fine(tmp_path):\n    (tmp_path / 'ok.txt').write_text('x')\n"
+    )
+    body = body.replace("LEFT_BEHIND", repr(os.path.join(SAMPLES, "left_behind.txt")))
+    out = _guarded_pytest(tmp_path, body)
+    assert "SPOTRUN_PYTEST_EXIT 1" in out, out
+    assert "3 passed" in out and "2 failed" in out, out
+    assert "test_fetch_unmocked" in out and "blocked a real side effect: network connection" in out
+    assert not os.path.exists(os.path.join(SAMPLES, "left_behind.txt"))
+
+    out = _guarded_pytest(tmp_path, body, k="test_add or test_fetch_mocked")
+    assert "SPOTRUN_PYTEST_EXIT 0" in out and "2 passed" in out, out
+
+
+def test_result_names_the_module_for_test_imports():
+    assert spot("pure.py", "total")["module"] == "pure"
+    assert spot(os.path.join("pkg", "core.py"), "quadruple")["module"] == "pkg.core"

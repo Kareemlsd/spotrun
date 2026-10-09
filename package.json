@@ -2,7 +2,7 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "kareemlsd",
   "private": true,
   "repository": {
@@ -162,6 +162,12 @@
         "command": "spotrun.showEdgeCase",
         "title": "Step Through Edge Case",
         "category": "Spot Run"
+      },
+      {
+        "command": "spotrun.writeTests",
+        "title": "Write Tests from These Runs",
+        "category": "Spot Run",
+        "icon": "$(checklist)"
       }
     ],
     "keybindings": [
@@ -268,6 +274,10 @@
         {
           "command": "spotrun.showEdgeCase",
           "when": "false"
+        },
+        {
+          "command": "spotrun.writeTests",
+          "when": "spotrun.hasResult"
         }
       ],
       "editor/context": [
@@ -327,6 +337,11 @@
       "view/title": [
         {
           "command": "spotrun.edgeCases",
+          "when": "view == spotrun.panel && spotrun.hasResult",
+          "group": "navigation@0"
+        },
+        {
+          "command": "spotrun.writeTests",
           "when": "view == spotrun.panel && spotrun.hasResult",
           "group": "navigation@0"
         },

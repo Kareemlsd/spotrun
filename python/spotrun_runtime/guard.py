@@ -978,6 +978,28 @@ def add_patch(spec):
     _apply_module(module_name)
 
 
+def install_strict():
+    """Guard for running the user's own tests: nothing is faked, but real
+    network connections, child processes and file changes outside scratch
+    locations are refused, so a test whose mocks are incomplete fails
+    instead of reaching the outside world."""
+    global _ROOTS
+    if STATE.installed:
+        return
+    STATE.installed = True
+    _ROOTS = _allowed_roots()
+    sys.dont_write_bytecode = True
+    for module_name, entries in PATCHES.items():
+        blocking = [entry for entry in entries if entry[1] == "block"]
+        if blocking:
+            _pending.setdefault(module_name, []).extend(blocking)
+    sys.meta_path.insert(0, _PatchFinder())
+    for module_name in list(_pending):
+        if module_name in sys.modules:
+            _apply_module(module_name)
+    sys.addaudithook(_audit)
+
+
 def install(in_scope, current_step, extra_patches=()):
     """Install the patch table, the import hook and the audit hook."""
     STATE.in_scope = in_scope
