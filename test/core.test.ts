@@ -546,7 +546,7 @@ test("edge cases: the prompt states the limit and the reply is cleaned up", () =
 });
 
 test("runtime: each edge case runs with its own inputs and no argument request", async () => {
-  const cases = [
+  const cases: { title: string; args: Record<string, string> }[] = [
     { title: "Typical", args: { prices: "[10.0, 20.0]", tax: "0.5" } },
     { title: "Empty", args: { prices: "[]" } },
     { title: "Text", args: { prices: "['a']" } },
