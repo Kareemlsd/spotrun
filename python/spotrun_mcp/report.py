@@ -150,7 +150,18 @@ def _final_locals(target, result, limit=15):
 def full(target, result, attempts, notes, how, asker="model"):
     head = "%s in %s (line %d)" % (target.qualname, target.relative, target.function.node.lineno)
     if result.get("fatal"):
-        return "\n".join([head, "", "Could not run:", short(result["fatal"].strip(), 4000), "", "How this ran: %s" % how])
+        fatal = result["fatal"].strip()
+        out = [head, "", "Could not run:", short(fatal, 3000)]
+        if "ModuleNotFoundError" in fatal or "ImportError" in fatal:
+            out.extend(
+                [
+                    "",
+                    "For this MCP server the interpreter is the project's .venv if there is one, else python3 on PATH. "
+                    "The person who configured the server can set SPOTRUN_PYTHON to the interpreter that has the project's "
+                    "packages, and SPOTRUN_EXTRA_PATHS for extra import folders.",
+                ]
+            )
+        return "\n".join(out + ["", "How this ran: %s" % how])
     out = [head, "", "Outcome: %s" % outcome(result)]
     exc = result.get("exception")
     if exc:

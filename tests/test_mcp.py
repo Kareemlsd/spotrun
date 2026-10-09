@@ -261,7 +261,7 @@ def test_syntax_error_in_the_file(client, tmp_path):
 
 def test_import_failure_is_explained(client):
     text = client().ok("run_function", file="layouts/missing.py", function=source.function_names(open(os.path.join(SAMPLES, "layouts", "missing.py")).read())[0])
-    assert "Could not run:" in text
+    assert "Could not run:" in text and "SPOTRUN_PYTHON" in text
 
 
 # --------------------------------------------------- the agent as the model
@@ -508,6 +508,31 @@ def test_timeout_stops_a_run(client, tmp_path):
 
 
 # --------------------------------------------------------------- units
+
+
+def test_interpreter_choice_skips_the_servers_own_environment(tmp_path, monkeypatch):
+    from spotrun_mcp import engine
+
+    def interpreter(*parts):
+        path = tmp_path.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+        return str(path)
+
+    own = interpreter("own", "bin", "python3")
+    interpreter("own", "bin", "python")
+    system = interpreter("system", "bin", "python3")
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(engine.sys, "prefix", str(tmp_path / "own"))
+    env = {"PATH": os.pathsep.join([os.path.dirname(own), os.path.dirname(system)]), "VIRTUAL_ENV": str(tmp_path / "own")}
+    assert engine.find_python(str(project), env) == system
+    venv = interpreter("project", ".venv", "bin", "python")
+    assert engine.find_python(str(project), env) == venv
+    assert engine.find_python(str(project), dict(env, SPOTRUN_PYTHON=own)) == own
+    with pytest.raises(engine.ToolError):
+        engine.find_python(str(project), dict(env, SPOTRUN_PYTHON="/no/such/python"))
 
 
 def test_reply_parsing():

@@ -81,22 +81,43 @@ def find_root(file, cwd):
     return directory
 
 
-def find_python(root, env, override=None):
-    """The interpreter that has the project's dependencies."""
-    candidates = [override, env.get("SPOTRUN_PYTHON")]
-    bin_dir, exe = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
-    for folder in (env.get("VIRTUAL_ENV"), os.path.join(root, ".venv"), os.path.join(root, "venv")):
-        if folder:
-            candidates.append(os.path.join(folder, bin_dir, exe))
-    candidates.extend(["python3", "python"])
-    for index, candidate in enumerate(candidates):
-        if not candidate:
+def _on_path(name, env, skip):
+    """Like shutil.which, but ignoring one folder."""
+    for folder in (env.get("PATH") or os.defpath).split(os.pathsep):
+        if not folder or os.path.realpath(folder) == skip:
             continue
-        found = candidate if os.path.isfile(candidate) else shutil.which(candidate)
+        for suffix in ("", ".exe") if os.name == "nt" else ("",):
+            candidate = os.path.join(folder, name + suffix)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
+def find_python(root, env):
+    """The interpreter that has the project's dependencies.
+
+    The server usually runs in an environment of its own (uvx, pipx) whose
+    interpreter comes first on PATH and has none of the project's packages,
+    so that environment is never picked unless nothing else exists.
+    """
+    bin_dir, exe = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    explicit = env.get("SPOTRUN_PYTHON")
+    if explicit:
+        found = explicit if os.path.isfile(explicit) else shutil.which(explicit, path=env.get("PATH"))
+        if not found:
+            raise ToolError("SPOTRUN_PYTHON is set to %r, which was not found." % explicit)
+        return found
+    own = os.path.realpath(sys.prefix)
+    for folder in (os.path.join(root, ".venv"), os.path.join(root, "venv"), env.get("VIRTUAL_ENV")):
+        if folder and os.path.realpath(folder) != own:
+            candidate = os.path.join(folder, bin_dir, exe)
+            if os.path.isfile(candidate):
+                return candidate
+    own_bin = os.path.realpath(os.path.join(sys.prefix, bin_dir))
+    for name in ("python3", "python"):
+        found = _on_path(name, env, own_bin)
         if found:
             return found
-        if index < 2:
-            raise ToolError("The Python interpreter %r was not found." % candidate)
     return sys.executable
 
 
