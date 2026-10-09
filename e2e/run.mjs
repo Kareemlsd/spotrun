@@ -42,6 +42,7 @@ fs.writeFileSync(
     "editor.fontSize": 14,
     "spotrun.pythonPath": process.env.SPOTRUN_PYTHON ?? "python3",
     "chat.disableAIFeatures": true,
+    "spotrun.showWalkthroughOnInstall": false,
     "workbench.secondarySideBar.defaultVisibility": "hidden",
   }),
 );
@@ -465,10 +466,25 @@ try {
   // ---- 9. editing ends the replay
   await page.keyboard.press("Control+1");
   await page.waitForTimeout(300);
+  await page.keyboard.press("End");
   await page.keyboard.type(" ");
   await page.waitForTimeout(800);
   check("editing the file ends the replay", (await statusText()) === "", await statusText());
+  const waiting = (await page.locator(".statusbar-item").allTextContents()).join(" | ");
+  check("the status bar offers to run again on save", waiting.includes("save to run again"), waiting.slice(0, 300));
+  await page.keyboard.press("Control+S");
+  await page.waitForFunction(() => [...document.querySelectorAll(".statusbar-item")].some((e) => / · (end|\d+\/\d+) · /.test(e.textContent)), null, { timeout: 30000 });
+  check("saving runs the function again and the replay returns", (await statusText()) !== "", await statusText());
   await page.keyboard.press("Control+Z");
+  await page.waitForTimeout(300);
+  await page.keyboard.press("Control+S");
+  await page.waitForTimeout(1500);
+
+  // ---- 10. self-check on this machine
+  await palette("Spot Run: Self-Check");
+  await page.waitForFunction(() => [...document.querySelectorAll(".notification-list-item")].some((n) => n.textContent.includes("Spot Run self-check")), null, { timeout: 90000 });
+  const selfCheck = (await page.locator(".notification-list-item", { hasText: "Spot Run self-check" }).first().textContent()) ?? "";
+  check("the self-check passes here", withModel ? /6 of 6 passed/.test(selfCheck) : /4 of 5 passed/.test(selfCheck) && selfCheck.includes("Language model"), selfCheck);
   await shot("11-after-edit");
 } catch (error) {
   failures.push(`exception: ${error.stack ?? error}`);

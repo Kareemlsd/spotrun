@@ -16,6 +16,8 @@ export interface ExecOptions {
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   log?: (text: string) => void;
+  /** Wraps the interpreter command, for running it inside an OS sandbox. */
+  wrap?: (command: string, args: string[]) => { command: string; args: string[] };
 }
 
 export class RunError extends Error {
@@ -31,7 +33,8 @@ export class RunError extends Error {
 /** Runs the Python runtime once and answers its questions through `handlers`. */
 export function execute(request: StartRequest, handlers: Handlers, options: ExecOptions): Promise<RunResult> {
   return new Promise<RunResult>((resolve, reject) => {
-    const child = spawn(options.python, ["-u", options.mainScript], {
+    const launch = options.wrap ? options.wrap(options.python, ["-u", options.mainScript]) : { command: options.python, args: ["-u", options.mainScript] };
+    const child = spawn(launch.command, launch.args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" },
       stdio: ["pipe", "pipe", "pipe"],

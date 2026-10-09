@@ -2,7 +2,7 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "kareemlsd",
   "private": true,
   "repository": {
@@ -168,6 +168,11 @@
         "title": "Write Tests from These Runs",
         "category": "Spot Run",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "spotrun.selfCheck",
+        "title": "Self-Check (Interpreter, Guard, Sandbox, Model)",
+        "category": "Spot Run"
       }
     ],
     "keybindings": [
@@ -206,7 +211,7 @@
       {
         "command": "spotrun.stop",
         "key": "escape",
-        "when": "spotrun.replayActive && editorTextFocus && !inDebugMode && !suggestWidgetVisible && !findWidgetVisible && !parameterHintsVisible && !inSnippetMode && !editorHasSelection && !editorHasMultipleSelections && !renameInputVisible && !inlineSuggestionVisible && !notificationToastsVisible && !codeActionMenuVisible"
+        "when": "(spotrun.replayActive || spotrun.waitingForSave) && editorTextFocus && !inDebugMode && !suggestWidgetVisible && !findWidgetVisible && !parameterHintsVisible && !inSnippetMode && !editorHasSelection && !editorHasMultipleSelections && !renameInputVisible && !inlineSuggestionVisible && !notificationToastsVisible && !codeActionMenuVisible"
       },
       {
         "command": "spotrun.nextEdgeCase",
@@ -493,12 +498,119 @@
           "minimum": 1,
           "maximum": 25,
           "description": "Upper limit on the number of edge cases the model may propose for a function. Finding them is one model request; each case is then run once."
+        },
+        "spotrun.sandbox": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "required",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Run inside an operating-system sandbox when one works on this machine (bubblewrap on Linux, sandbox-exec on macOS); otherwise use the in-process guard alone.",
+            "Refuse to run anything unless the operating-system sandbox is active.",
+            "Use the in-process guard alone."
+          ],
+          "default": "auto",
+          "markdownDescription": "Operating-system containment for the function being run. Inside the sandbox there is no network and files can only be written to a scratch folder, whatever the code does. Windows has no supported sandbox, so `auto` uses the guard alone there and `required` refuses to run."
+        },
+        "spotrun.rerunOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "After an edit ends a replay, run the same function (or edge case) again with the same inputs when the file is saved."
+        },
+        "spotrun.showWalkthroughOnInstall": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the Get started walkthrough once after the extension is installed."
         }
       }
     },
     "configurationDefaults": {
       "comments.openView": "never"
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "start",
+        "title": "Get started with Spot Run",
+        "description": "Run a Python function on the spot with invented inputs, and step through it.",
+        "steps": [
+          {
+            "id": "run",
+            "title": "Run a function",
+            "description": "Open a Python file, put the cursor inside a function and press Ctrl+Alt+Enter (Cmd+Alt+Enter on macOS), or click **Spot Run** above the def. A language model invents the inputs; calls to databases, HTTP and files are replaced by fakes.\n[Run Function at Cursor](command:spotrun.run)",
+            "media": {
+              "image": "docs/media/run-and-step.gif",
+              "altText": "A function that calls an HTTP API is run and stepped through"
+            },
+            "completionEvents": [
+              "onCommand:spotrun.run"
+            ]
+          },
+          {
+            "id": "step",
+            "title": "Step through the recording",
+            "description": "F10 steps over, F11 steps into your own functions, Shift+F11 steps out, Shift+F10 steps back. Values appear next to the lines that produced them. Click the status bar entry to see inputs, invented values and intercepted calls.\n[Show the Panel](command:spotrun.showPanel)",
+            "media": {
+              "image": "docs/media/panel.png",
+              "altText": "The Spot Run panel beside a finished run"
+            },
+            "completionEvents": [
+              "onCommand:spotrun.stepOver",
+              "onCommand:spotrun.showPanel"
+            ]
+          },
+          {
+            "id": "describe",
+            "title": "Describe the inputs",
+            "description": "Click **Describe inputs** above the function and say what the data should look like. Follow-ups refine the previous inputs.\n[Describe Inputs](command:spotrun.describe)",
+            "media": {
+              "image": "docs/media/describe-inputs.gif",
+              "altText": "Describing inputs in a conversation under the function"
+            },
+            "completionEvents": [
+              "onCommand:spotrun.describe"
+            ]
+          },
+          {
+            "id": "cases",
+            "title": "Find the edge cases",
+            "description": "**Edge cases** proposes the situations this code treats differently, runs each once and lists what returned and what raised. Pick one to step through it.\n[Edge Cases](command:spotrun.edgeCases)",
+            "media": {
+              "image": "docs/media/edge-cases.gif",
+              "altText": "A list of edge cases with their outcomes"
+            },
+            "completionEvents": [
+              "onCommand:spotrun.edgeCases"
+            ]
+          },
+          {
+            "id": "tests",
+            "title": "Write tests from the runs",
+            "description": "When the runs look right, **Write tests** turns them into test functions in your codebase, in the file where your project keeps its tests, and checks that they pass.\n[Write Tests](command:spotrun.writeTests)",
+            "media": {
+              "image": "docs/media/write-tests.gif",
+              "altText": "Tests written beside the function"
+            },
+            "completionEvents": [
+              "onCommand:spotrun.writeTests"
+            ]
+          },
+          {
+            "id": "check",
+            "title": "Check your setup",
+            "description": "The self-check verifies the interpreter, the guard, the operating-system sandbox and your language model on this machine.\n[Run the Self-Check](command:spotrun.selfCheck)\n[Select Language Model](command:spotrun.selectModel)",
+            "media": {
+              "image": "docs/media/panel.png",
+              "altText": "The panel shows which containment was active"
+            },
+            "completionEvents": [
+              "onCommand:spotrun.selfCheck"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs",
@@ -509,7 +621,8 @@
     "test": "npm run typecheck && npm run test:unit && npm run test:python",
     "package": "npm run build -- --production && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build -- --production",
-    "test:e2e": "node e2e/run.mjs"
+    "test:e2e": "node e2e/run.mjs",
+    "demo": "node e2e/demo.mjs && python3 docs/build_media.py"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

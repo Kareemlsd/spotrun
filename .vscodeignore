@@ -14,3 +14,7 @@ tsconfig*.json
 **/*.pyc
 .pytest_cache/**
 e2e/**
+docs/build_media.py
+docs/media/*.png
+!docs/media/panel.png
+docs/media/*.mp4

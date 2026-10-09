@@ -7,6 +7,7 @@ import { formatWrites, ReplayModel } from "../src/core/replayModel";
 import { createFsHost, dig, parseDigReply, runLookup } from "../src/core/dig";
 import { buildTestsPrompt, gatherRepoContext, mergeTests, parseTestsReply, scenarioFromResult, slug, testNames, validateTestPath } from "../src/core/tests";
 import { Handlers } from "../src/core/runtimeProcess";
+import { detectSandbox, forgetSandboxProbes, makeScratch, scratchEnv, seatbeltProfile } from "../src/core/sandbox";
 import { absorb, runWithRetries, RunSpec } from "../src/core/session";
 import { emptyFunctionData, RunResult } from "../src/core/types";
 
@@ -692,4 +693,61 @@ test("tests: merging never overwrites and keeps names unique", () => {
   assert.equal(lines[merged.line], "def test_a_2():");
   assert.equal(merged.created, false);
   assert.deepEqual(testNames("async def test_x():\n  pass\ndef helper(): pass\nclass TestY: pass\n    def test_inner(self): pass"), ["test_x", "TestY"]);
+});
+
+// ------------------------------------------------------------------ sandbox
+
+test("sandbox: mode off and unsupported platforms fall back to the guard", async () => {
+  assert.equal((await detectSandbox("python3", "off")).kind, "none");
+  const windows = await detectSandbox("python3", "auto", "win32");
+  assert.equal(windows.kind, "none");
+  assert.match(windows.reason ?? "", /no OS sandbox/);
+  assert.deepEqual(windows.wrap("py", ["a"], "/w", "/s"), { command: "py", args: ["a"] });
+  const profile = seatbeltProfile("/private/tmp/spotrun-x");
+  assert.match(profile, /\(deny network\*\)/);
+  assert.match(profile, /\(deny file-write\* \(subpath "\/"\)\)/);
+  assert.match(profile, /\(allow file-write\* \(subpath "\/private\/tmp\/spotrun-x"\)/);
+});
+
+test("sandbox: a broken sandbox tool is detected by the probe", async () => {
+  forgetSandboxProbes();
+  const broken = await detectSandbox("/no/such/python", "auto");
+  assert.equal(broken.kind, "none");
+  forgetSandboxProbes();
+});
+
+test("sandbox: under bubblewrap, effects the guard cannot see are refused by the OS", { skip: process.platform !== "linux" }, async (t) => {
+  forgetSandboxProbes();
+  const sandbox = await detectSandbox(options.python, "auto");
+  if (sandbox.kind !== "bubblewrap") {
+    t.skip(`bubblewrap not usable here: ${sandbox.reason}`);
+    return;
+  }
+  const fsn = require("node:fs") as typeof import("node:fs");
+  const contained = () => {
+    const scratch = makeScratch();
+    return { scratch, opts: { ...options, env: { ...options.env, ...scratchEnv(scratch) }, wrap: (command: string, args: string[]) => sandbox.wrap(command, args, SAMPLES, scratch) } };
+  };
+  const leftover = path.join(SAMPLES, "written_at_import.txt");
+
+  // A file written while the module is imported: the guard is not armed yet.
+  let run = contained();
+  let outcome = await runWithRetries(spec(path.join("layouts", "import_writes.py"), "f", false), emptyFunctionData(""), silent, run.opts);
+  assert.match(outcome.result.fatal ?? "", /Read-only file system/);
+  assert.equal(fsn.existsSync(leftover), false);
+
+  // A socket opened while the module is imported.
+  run = contained();
+  outcome = await runWithRetries(spec(path.join("layouts", "import_connects.py"), "f", false), emptyFunctionData(""), silent, run.opts);
+  assert.match(outcome.result.fatal ?? "", /Network is unreachable/);
+
+  // Ordinary runs and temp files still work.
+  run = contained();
+  outcome = await runWithRetries(spec("pure.py", "total", false), emptyFunctionData(""), silent, run.opts);
+  assert.equal(outcome.result.return, "3.6");
+  run = contained();
+  outcome = await runWithRetries(spec(path.join("layouts", "scratch_ok.py"), "f", false), emptyFunctionData(""), silent, run.opts);
+  assert.equal(outcome.result.return, "'ok'");
+  outcome = await runWithRetries(spec("effects.py", "write_report", false), emptyFunctionData(""), silent, contained().opts);
+  assert.equal(outcome.result.exception, null, "the guard still keeps workspace writes in memory");
 });

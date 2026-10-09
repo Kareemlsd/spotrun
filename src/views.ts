@@ -37,8 +37,11 @@ export class PanelProvider implements vscode.TreeDataProvider<Node> {
 
   private caseIndex: number | undefined;
 
-  update(model: ReplayModel | undefined, data?: FunctionData, modelName?: string, caseIndex?: number): void {
+  private containment = "";
+
+  update(model: ReplayModel | undefined, data?: FunctionData, modelName?: string, caseIndex?: number, containment?: string): void {
     this.caseIndex = caseIndex;
+    this.containment = containment ?? this.containment;
     this.model = model;
     this.data = data ?? this.data;
     this.modelName = modelName ?? this.modelName;
@@ -222,6 +225,18 @@ export class PanelProvider implements vscode.TreeDataProvider<Node> {
         description: `${lines.length} line${lines.length === 1 ? "" : "s"}`,
         expanded: lines.length <= 12,
         children: lines.slice(-200).map((line) => ({ kind: "info" as const, label: line === "" ? " " : line, icon: "output" })),
+      });
+    }
+
+    if (this.containment) {
+      const sandboxed = this.containment.startsWith("OS sandbox");
+      nodes.push({
+        kind: "info",
+        label: this.containment,
+        icon: sandboxed ? "lock" : "unlock",
+        tooltip: sandboxed
+          ? "The run happened inside an operating-system sandbox. Whatever the in-process guard might miss still had no network and could not change files outside a scratch folder."
+          : "Only the in-process guard was active. It replaces known effectful calls and blocks sockets, processes and file changes it can see, but code that bypasses Python (C extensions, work done while the module is imported) is not contained. See the spotrun.sandbox setting.",
       });
     }
 

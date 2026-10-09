@@ -8,6 +8,7 @@ import { buildArgsPrompt, buildCasesPrompt, buildContext, buildValuePrompt, pars
 import { findByQualname, functionAt, parsePythonFunctions, PyFunction, signatureOf, sourceOf } from "./core/pythonFunctions";
 import { ReplayModel, truncate } from "./core/replayModel";
 import { Handlers, RunError } from "./core/runtimeProcess";
+import { detectSandbox, makeScratch, Sandbox, SandboxMode, scratchEnv } from "./core/sandbox";
 import { buildRequest, runWithRetries, RunSpec } from "./core/session";
 import { buildTestsPrompt, gatherRepoContext, mergeTests, parseTestsReply, scenarioFromResult, TestScenario, validateTestPath } from "./core/tests";
 import { EdgeCase, emptyFunctionData, FunctionData, NeedArgs, NeedValue, RunResult } from "./core/types";
@@ -30,6 +31,11 @@ interface Current {
   model: ReplayModel;
   python: string;
   /** Index of the edge case being shown, when it is one. */
+  caseIndex?: number;
+}
+
+interface PendingRerun {
+  target: Target;
   caseIndex?: number;
 }
 
@@ -56,6 +62,9 @@ class Controller implements vscode.Disposable {
   private readonly caseRuns = new Map<string, CaseRun>();
   private batch: vscode.CancellationTokenSource | undefined;
   private chatName = "";
+  private containment = "";
+  /** What to run again when the edited file is saved. */
+  private pendingRerun: PendingRerun | undefined;
   private readonly lensChanged = new vscode.EventEmitter<void>();
   private readonly disposables: vscode.Disposable[] = [];
   private current: Current | undefined;
@@ -91,6 +100,7 @@ class Controller implements vscode.Disposable {
     register("spotrun.editValue", (node?: Node) => this.editValue(node));
     register("spotrun.unpin", (node?: Node) => this.unpin(node));
     register("spotrun.forget", () => this.forget());
+    register("spotrun.selfCheck", () => this.selfCheck());
     register("spotrun.writeTests", () => this.guarded(() => this.writeTests()));
     register("spotrun.edgeCases", (uri?: vscode.Uri, qualname?: string) => this.edgeCases(uri, qualname));
     register("spotrun.showEdgeCase", (index: number) => this.guarded(() => this.showCase(index)));
@@ -118,9 +128,35 @@ class Controller implements vscode.Disposable {
       ),
       vscode.workspace.onDidChangeTextDocument((event) => {
         if (this.current && event.contentChanges.length > 0 && event.document.uri.scheme === "file" && this.view.covers(event.document.uri.fsPath)) {
-          // The recording no longer matches the text. Drop it, keep the target.
+          // The recording no longer matches the text. Drop it, and remember
+          // what was showing so that saving the file brings it back.
+          const pending: PendingRerun = { target: this.current.target, caseIndex: this.current.caseIndex };
           this.clearReplay();
+          this.pendingRerun = pending;
+          if (vscode.workspace.getConfiguration("spotrun", event.document.uri).get<boolean>("rerunOnSave", true)) {
+            this.status.text = `$(history) ${pending.target.qualname} · save to run again`;
+            this.status.tooltip = "The replay ended because the file changed. Saving runs the function again with the same inputs. Esc cancels.";
+            this.status.show();
+            void this.setContext(false, false, true);
+          }
         }
+      }),
+      vscode.workspace.onDidSaveTextDocument((document) => {
+        const pending = this.pendingRerun;
+        if (!pending || this.running || document.languageId !== "python") {
+          return;
+        }
+        if (!vscode.workspace.getConfiguration("spotrun", document.uri).get<boolean>("rerunOnSave", true)) {
+          return;
+        }
+        this.pendingRerun = undefined;
+        void this.guarded(async () => {
+          if (pending.caseIndex !== undefined && this.casesOf(pending.target)[pending.caseIndex]) {
+            await this.run(pending.target, false, undefined, false, { index: pending.caseIndex, quiet: false });
+          } else {
+            await this.run(pending.target, false);
+          }
+        });
       }),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("spotrun")) {
@@ -465,6 +501,7 @@ class Controller implements vscode.Disposable {
     };
 
     this.running?.abort();
+    this.pendingRerun = undefined;
     const abort = new AbortController();
     this.running = abort;
     const cancel = new vscode.CancellationTokenSource();
@@ -482,6 +519,14 @@ class Controller implements vscode.Disposable {
     const digSteps = Math.max(1, Math.min(30, config.get<number>("digDeep.maxLookups", 8)));
     const handlers = this.handlers(target, fn, text, signature, data, cancel.token, useDig ? { root, maxSteps: digSteps } : undefined);
     const started = Date.now();
+    const sandbox = await this.sandboxFor(python, target.uri);
+    if (!sandbox) {
+      this.running = undefined;
+      cancel.dispose();
+      this.updateStatus();
+      return;
+    }
+    const scratch = sandbox.kind === "none" ? undefined : makeScratch();
     try {
       const outcome = await runWithRetries(spec, data, handlers, {
         python,
@@ -490,6 +535,8 @@ class Controller implements vscode.Disposable {
         timeoutMs: Math.max(1, config.get<number>("timeoutSeconds", 20)) * 1000,
         signal: abort.signal,
         log: (line) => this.log.appendLine(line),
+        env: scratch ? scratchEnv(scratch) : undefined,
+        wrap: scratch ? (command, args) => sandbox.wrap(command, args, root, scratch) : undefined,
       });
       if (abort.signal.aborted) {
         return;
@@ -579,6 +626,9 @@ class Controller implements vscode.Disposable {
       throw error;
     } finally {
       cancel.dispose();
+      if (scratch) {
+        void fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+      }
       if (this.running === abort) {
         this.running = undefined;
         if (!this.current && !edge?.quiet) {
@@ -600,19 +650,151 @@ class Controller implements vscode.Disposable {
     this.current = { target, key, spec: run.spec, data: run.data, model, python: run.python, caseIndex };
     await this.setContext(true, true);
     this.view.setModel(model);
-    this.panel.update(model, run.data, this.chatName, caseIndex);
+    this.panel.update(model, run.data, this.chatName, caseIndex, this.containment);
     this.tree.description = caseIndex === undefined ? target.qualname : `${target.qualname} · ${run.data.cases?.[caseIndex]?.title ?? ""}`;
     this.lensChanged.fire();
     await this.view.reveal();
     this.updateStatus();
   }
 
+  // ------------------------------------------------------------ self-check
+
+  /**
+   * Verifies the whole chain on this machine: interpreter, runtime, guard,
+   * OS sandbox and the language model. Meant for the first run after
+   * installing and for reporting problems.
+   */
+  private async selfCheck(): Promise<{ name: string; ok: boolean; detail: string }[]> {
+    const results: { name: string; ok: boolean; detail: string }[] = [];
+    const note = (name: string, ok: boolean, detail: string) => {
+      results.push({ name, ok, detail });
+      this.log.appendLine(`  ${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
+    };
+    const sampleDir = path.join(this.context.extensionPath, "python", "selfcheck");
+    const sample = path.join(sampleDir, "spotrun_selfcheck_sample.py");
+    const uri = vscode.window.activeTextEditor?.document.uri ?? vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(sample);
+    this.log.appendLine(`\n── Self-check (${process.platform}, VS Code ${vscode.version})`);
+    this.status.text = "$(loading~spin) Spot Run: self-check";
+    this.status.show();
+    const silent: Handlers = { needArgs: async () => undefined, needValue: async () => undefined };
+    const spec = (qualname: string, llm: boolean): RunSpec => ({ file: sample, qualname, root: sampleDir, scope: "file", llm, limits: {} });
+    try {
+      const python = await resolvePython(uri, this.log);
+      const version = await this.runPython(python, ["-c", "import sys; print('%d.%d.%d' % sys.version_info[:3]); sys.exit(0 if sys.version_info >= (3, 9) else 3)"], sampleDir, undefined, 20000);
+      note("Python interpreter", version.code === 0, version.code === 0 ? `${python} (${version.output.trim()})` : `${python}: ${version.output.trim() || "could not be started"}${version.code === 3 ? " — Python 3.9 or later is needed" : ""}`);
+      if (version.code !== 0) {
+        return results;
+      }
+      const base = { python, mainScript: this.mainScript(), cwd: sampleDir, timeoutMs: 20000 };
+
+      try {
+        const plain = await runWithRetries(spec("discounted", false), emptyFunctionData(""), silent, base);
+        const ok = !plain.result.fatal && !plain.result.exception && plain.result.steps.length === 2;
+        note("Runtime runs and records a function", ok, ok ? `returned ${plain.result.return} in ${plain.result.steps.length} steps` : (plain.result.fatal ?? plain.result.exception?.message ?? "unexpected trace"));
+      } catch (error) {
+        note("Runtime runs and records a function", false, error instanceof Error ? error.message : String(error));
+      }
+
+      try {
+        const blocked = await runWithRetries(spec("calls_out", false), emptyFunctionData(""), silent, base);
+        const ok = !!blocked.result.exception?.blocked;
+        note("Guard refuses a real network connection", ok, ok ? blocked.result.exception!.message : `not blocked: ${blocked.result.fatal ?? blocked.result.exception?.message ?? blocked.result.return}`);
+      } catch (error) {
+        note("Guard refuses a real network connection", false, error instanceof Error ? error.message : String(error));
+      }
+
+      const mode = vscode.workspace.getConfiguration("spotrun", uri).get<SandboxMode>("sandbox", "auto");
+      const sandbox = await detectSandbox(python, mode);
+      if (sandbox.kind === "none") {
+        note("Operating-system sandbox", mode !== "required", `not active: ${sandbox.reason}. Runs rely on the in-process guard.`);
+      } else {
+        const scratch = makeScratch();
+        try {
+          const inside = await runWithRetries(spec("discounted", false), emptyFunctionData(""), silent, {
+            ...base,
+            env: scratchEnv(scratch),
+            wrap: (command, args) => sandbox.wrap(command, args, sampleDir, scratch),
+          });
+          note("Operating-system sandbox", !inside.result.fatal && !inside.result.exception, `${sandbox.label}; a run inside it returned ${inside.result.return}`);
+        } catch (error) {
+          note("Operating-system sandbox", false, `${sandbox.kind}: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          void fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
+
+      const chat = await this.llm.pick();
+      if (!chat) {
+        note("Language model", false, this.llm.enabled() ? "no model is available. Sign in to GitHub Copilot or install a model provider." : "turned off in the settings (spotrun.useLanguageModel or model None)");
+        return results;
+      }
+      const cancel = new vscode.CancellationTokenSource();
+      try {
+        const reply = await this.llm.ask('Reply with exactly this JSON object and nothing else: {"value": "42"}', cancel.token, 30000);
+        const value = reply === undefined ? undefined : parseValueReply(reply);
+        note("Language model answers", value === "42", value === "42" ? `${chat.name} (${chat.vendor}/${chat.family})` : `${chat.name}: ${reply === undefined ? "the request failed, see above in this log" : `unexpected reply: ${truncate(reply, 120)}`}`);
+
+        let asked = false;
+        const handlers: Handlers = {
+          needArgs: async (need: NeedArgs) => {
+            asked = true;
+            const answer = await this.llm.ask(
+              buildArgsPrompt({ relativePath: "spotrun_selfcheck_sample.py", qualname: "discounted", context: fs.readFileSync(sample, "utf8"), need, usages: [] }),
+              cancel.token,
+            );
+            const parsed = answer === undefined ? undefined : parseArgsReply(answer);
+            return parsed ? { args: parsed } : undefined;
+          },
+          needValue: async () => undefined,
+        };
+        const full = await runWithRetries(spec("discounted", true), emptyFunctionData(""), handlers, base);
+        const generated = (full.result.args ?? []).filter((a) => a.source === "llm");
+        const rejected = (full.result.args ?? []).filter((a) => a.error);
+        const ok = asked && generated.length > 0 && rejected.length === 0 && !full.result.exception;
+        note(
+          "Model-generated inputs run",
+          ok,
+          ok
+            ? `discounted(${generated.map((a) => `${a.name}=${a.expr}`).join(", ")}) returned ${full.result.return}`
+            : rejected.length > 0
+              ? `the model's expression was rejected: ${rejected[0].rejected} (${rejected[0].error})`
+              : "the model's reply could not be used as arguments",
+        );
+      } finally {
+        cancel.dispose();
+      }
+      return results;
+    } finally {
+      this.updateStatus();
+      if (!this.current) {
+        this.status.hide();
+      }
+      const passed = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok);
+      const message = `Spot Run self-check: ${passed} of ${results.length} passed.${failed.length > 0 ? ` Failed: ${failed.map((f) => f.name).join("; ")}.` : ""}`;
+      void (failed.length > 0 ? vscode.window.showWarningMessage(message, "Show Log") : vscode.window.showInformationMessage(message, "Show Log")).then((choice) => {
+        if (choice) {
+          this.log.show();
+        }
+      });
+    }
+  }
+
   // ----------------------------------------------------------- write tests
 
   /** Runs a short Python command and returns its combined output. */
-  private runPython(python: string, args: string[], cwd: string, input?: string, timeoutMs = 120000): Promise<{ code: number | null; output: string }> {
+  private runPython(python: string, args: string[], cwd: string, input?: string, timeoutMs = 120000, sandbox?: Sandbox): Promise<{ code: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = spawn(python, args, { cwd, env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" }, windowsHide: true });
+      const scratch = sandbox && sandbox.kind !== "none" ? makeScratch() : undefined;
+      const launch = scratch ? sandbox!.wrap(python, args, cwd, scratch) : { command: python, args };
+      const child = spawn(launch.command, launch.args, {
+        cwd,
+        env: { ...process.env, ...(scratch ? scratchEnv(scratch) : {}), PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" },
+        windowsHide: true,
+      });
+      if (scratch) {
+        child.on("close", () => void fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined));
+      }
       let output = "";
       const timer = setTimeout(() => child.kill(), timeoutMs);
       child.stdout.on("data", (chunk) => (output += chunk));
@@ -773,7 +955,14 @@ class Controller implements vscode.Disposable {
 
         const selector = merged.names.join(" or ");
         const extra = (spec.extraPaths ?? []).flatMap((p) => ["--path", p]);
-        const run = await this.runPython(python, [this.mainScript(), "--pytest", fileUri!.fsPath, "--root", root, ...extra, ...(selector ? ["-k", selector] : [])], root);
+        const run = await this.runPython(
+          python,
+          [this.mainScript(), "--pytest", fileUri!.fsPath, "--root", root, ...extra, ...(selector ? ["-k", selector] : [])],
+          root,
+          undefined,
+          120000,
+          await detectSandbox(python, vscode.workspace.getConfiguration("spotrun", target.uri).get<SandboxMode>("sandbox", "auto")),
+        );
         const lines = run.output.trim().split("\n");
         if (run.output.includes("SPOTRUN_PYTEST_MISSING")) {
           summary = "not checked, because pytest is not installed in this interpreter";
@@ -1043,6 +1232,21 @@ class Controller implements vscode.Disposable {
     return [...new Set(paths)];
   }
 
+  /** The OS sandbox for this interpreter, or undefined (with a message shown) when one is required but missing. */
+  private async sandboxFor(python: string, uri: vscode.Uri): Promise<Sandbox | undefined> {
+    const mode = vscode.workspace.getConfiguration("spotrun", uri).get<SandboxMode>("sandbox", "auto");
+    const sandbox = await detectSandbox(python, mode);
+    if (sandbox.kind === "none" && mode === "required") {
+      void vscode.window.showErrorMessage(`Spot Run: spotrun.sandbox is set to "required", but ${sandbox.reason}. Nothing was run.`);
+      return undefined;
+    }
+    if (this.containment !== sandbox.label) {
+      this.log.appendLine(`Containment: ${sandbox.label}${sandbox.reason ? ` (${sandbox.reason})` : ""}`);
+    }
+    this.containment = sandbox.label;
+    return sandbox;
+  }
+
   private mainScript(): string {
     return path.join(this.context.extensionPath, "python", "spotrun_main.py");
   }
@@ -1210,9 +1414,10 @@ class Controller implements vscode.Disposable {
 
   // ---------------------------------------------------------------- replay
 
-  private async setContext(replayActive: boolean, hasResult: boolean): Promise<void> {
+  private async setContext(replayActive: boolean, hasResult: boolean, waitingForSave = false): Promise<void> {
     await vscode.commands.executeCommand("setContext", "spotrun.replayActive", replayActive);
     await vscode.commands.executeCommand("setContext", "spotrun.hasResult", hasResult);
+    await vscode.commands.executeCommand("setContext", "spotrun.waitingForSave", waitingForSave);
   }
 
   private updateStatus(): void {
@@ -1256,6 +1461,7 @@ class Controller implements vscode.Disposable {
 
   private stop(): void {
     this.batch?.cancel();
+    this.pendingRerun = undefined;
     this.running?.abort();
     this.running = undefined;
     this.clearReplay();
@@ -1409,6 +1615,12 @@ export function activate(context: vscode.ExtensionContext) {
   const log = vscode.window.createOutputChannel("Spot Run");
   const controller = new Controller(context, log);
   context.subscriptions.push(log, controller);
+  if (!context.globalState.get<boolean>("spotrun.walkthroughShown")) {
+    void context.globalState.update("spotrun.walkthroughShown", true);
+    if (vscode.workspace.getConfiguration("spotrun").get<boolean>("showWalkthroughOnInstall", true)) {
+      void vscode.commands.executeCommand("workbench.action.openWalkthrough", `${context.extension.id}#start`, false);
+    }
+  }
   return { state: () => controller.state() };
 }
 
