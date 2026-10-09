@@ -2,9 +2,9 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "kareemlsd",
-  "private": true,
+  "preview": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/Kareemlsd/spotrun.git"
@@ -631,5 +631,9 @@
     "esbuild": "^0.24.0",
     "typescript": "^5.6.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Kareemlsd/spotrun/issues"
+  },
+  "homepage": "https://github.com/Kareemlsd/spotrun#readme"
 }
