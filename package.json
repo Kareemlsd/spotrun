@@ -2,7 +2,7 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "kareemlsd",
   "private": true,
   "repository": {
@@ -416,6 +416,14 @@
           "minimum": 1,
           "maximum": 30,
           "description": "How many searches and file reads the model may make in one Dig deep. Each lookup is one more model request."
+        },
+        "spotrun.extraPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Folders to add to the import path when a function is run, absolute or relative to the workspace folder. Needed only for your own modules that live outside the workspace: modules anywhere inside it are found automatically, and `python.analysis.extraPaths` and `PYTHONPATH` from the workspace `.env` file are honoured too."
         }
       }
     },

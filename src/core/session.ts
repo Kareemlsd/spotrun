@@ -8,6 +8,8 @@ export interface RunSpec {
   scope: string;
   llm: boolean;
   limits: Record<string, number>;
+  /** Extra folders for the import path, absolute or relative to root. */
+  extraPaths?: string[];
 }
 
 export interface SessionOutcome {
@@ -31,6 +33,7 @@ export function buildRequest(spec: RunSpec, data: FunctionData): StartRequest {
     imports: data.imports ?? [],
     scope: spec.scope,
     limits: spec.limits,
+    extra_paths: spec.extraPaths ?? [],
   };
 }
 

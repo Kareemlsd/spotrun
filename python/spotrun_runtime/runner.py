@@ -57,7 +57,26 @@ def _is_about(exc, names):
     return missing is not None and any(missing == n or n.startswith(missing + ".") for n in names)
 
 
-def import_target(file, root):
+_WALK_SKIP = frozenset(["node_modules", "site-packages", "dist-packages", "venv", "env", "build", "dist", "__pycache__", "__pypackages__"])
+
+
+def _find_in_workspace(root, name, limit=20000):
+    """Folders anywhere in the workspace that contain module or package
+    ``name``, nearest to the root first."""
+    homes = []
+    seen = 0
+    for current, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in _WALK_SKIP)
+        seen += len(dirs) + len(files)
+        if name + ".py" in files or name in dirs:
+            homes.append(current)
+        if seen > limit or len(homes) >= 5:
+            break
+    homes.sort(key=lambda p: (p.count(os.sep), p))
+    return homes
+
+
+def import_target(file, root, extra_paths=()):
     """Import the module that defines the function.
 
     Projects are laid out in many ways, so several module names are tried:
@@ -97,7 +116,8 @@ def import_target(file, root):
         sys.path.insert(0, entry)
 
     source_dir = os.path.join(root, "src")
-    for entry in ([source_dir] if os.path.isdir(source_dir) else []) + [root]:
+    configured = [os.path.abspath(os.path.join(root, os.path.expanduser(p))) for p in extra_paths if isinstance(p, str) and p.strip()]
+    for entry in list(reversed(configured)) + ([source_dir] if os.path.isdir(source_dir) else []) + [root]:
         put_first(entry)
 
     def is_target(module):
@@ -137,6 +157,13 @@ def import_target(file, root):
                         ):
                             home = folder
                             break
+                    if home is None:
+                        # Not next to the file or above it: look through the
+                        # whole workspace for a module of that name.
+                        for folder in _find_in_workspace(root, missing):
+                            if folder not in added:
+                                home = folder
+                                break
                 if home is None:
                     raise
                 # A sibling top-level package: its folder is a source root.
@@ -168,11 +195,28 @@ def import_target(file, root):
     return module
 
 
+def _installed_elsewhere_hint(name):
+    """True when the name looks like a third-party distribution rather than
+    project code (used only to word the hint)."""
+    return name.lower() in (
+        "numpy", "pandas", "scipy", "matplotlib", "requests", "torch", "tensorflow", "sklearn", "yaml", "pydantic",
+        "sqlalchemy", "fastapi", "flask", "django", "httpx", "boto3", "jax", "xarray", "h5py", "netCDF4".lower(), "pytest",
+    )
+
+
 def explain_import_failure(file, exc):
     """First line says what went wrong and what to do; the traceback follows."""
     name = os.path.basename(file)
     summary = "%s: %s" % (type(exc).__name__, exc)
-    if isinstance(exc, ModuleNotFoundError):
+    missing = (getattr(exc, "name", None) or "").split(".")[0]
+    if isinstance(exc, ModuleNotFoundError) and missing and not _installed_elsewhere_hint(missing):
+        hint = (
+            "No module or package named %s exists in this workspace either, and the interpreter Spot Run used (%s) does not have it. "
+            "If it is your own code outside the workspace folder, add its folder to the spotrun.extraPaths setting. "
+            "If it is an installed package, select your project's interpreter in the Python extension or set spotrun.pythonPath."
+            % (missing, sys.executable)
+        )
+    elif isinstance(exc, ModuleNotFoundError):
         hint = (
             "The interpreter Spot Run used (%s) cannot find that module. If it is a package you installed, "
             "Spot Run is probably using a different interpreter than your project: select the right one in the "
@@ -654,7 +698,7 @@ def run(request, channel):
     # not set gets an invented value, as it would inside the function.
     guard.STATE.importing = True
     try:
-        module = import_target(file, root)
+        module = import_target(file, root, request.get("extra_paths") or ())
     except Fatal:
         raise
     except BaseException as exc:

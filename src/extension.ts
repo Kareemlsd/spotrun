@@ -402,6 +402,7 @@ class Controller implements vscode.Disposable {
       scope: config.get<string>("scope", "workspace"),
       llm: !!chat,
       limits: { max_llm_calls: config.get<number>("maxModelCalls", 30) },
+      extraPaths: this.extraPaths(target.uri, root),
     };
 
     this.running?.abort();
@@ -510,6 +511,44 @@ class Controller implements vscode.Disposable {
         }
       }
     }
+  }
+
+  /**
+   * Folders to add to the import path: Spot Run's own setting, the ones the
+   * Python extension is configured with, and PYTHONPATH from the workspace
+   * .env file, so that imports resolve the way they do elsewhere in the editor.
+   */
+  private extraPaths(uri: vscode.Uri, root: string): string[] {
+    const expand = (value: string) => value.replace(/\$\{workspaceFolder\}/g, root).trim();
+    const paths: string[] = [];
+    const add = (values: unknown) => {
+      if (Array.isArray(values)) {
+        for (const value of values) {
+          if (typeof value === "string" && value.trim()) {
+            paths.push(expand(value));
+          }
+        }
+      }
+    };
+    add(vscode.workspace.getConfiguration("spotrun", uri).get("extraPaths"));
+    const python = vscode.workspace.getConfiguration("python", uri);
+    add(python.get("analysis.extraPaths"));
+    add(python.get("autoComplete.extraPaths"));
+    try {
+      const envFile = expand(python.get<string>("envFile") || "${workspaceFolder}/.env");
+      const match = /^\s*(?:export\s+)?PYTHONPATH\s*=\s*(.*)$/m.exec(fs.readFileSync(envFile, "utf8"));
+      if (match) {
+        add(
+          match[1]
+            .trim()
+            .replace(/^["']|["']$/g, "")
+            .split(path.delimiter),
+        );
+      }
+    } catch {
+      // No .env file, or not readable.
+    }
+    return [...new Set(paths)];
   }
 
   private mainScript(): string {

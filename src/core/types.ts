@@ -157,6 +157,7 @@ export interface StartRequest {
   imports: string[];
   scope: string;
   limits: Record<string, number>;
+  extra_paths?: string[];
   trace?: boolean;
 }
 

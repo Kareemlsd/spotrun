@@ -459,3 +459,24 @@ def test_missing_dependency_is_explained_with_the_interpreter():
     first = r["fatal"].splitlines()[0]
     assert first == "Importing missing.py failed: ModuleNotFoundError: No module named 'not_installed_pkg_xyz'"
     assert sys.executable in r["fatal"] and "spotrun.pythonPath" in r["fatal"]
+
+
+def test_own_module_elsewhere_in_the_workspace_is_found():
+    # sim/run.py imports sim_config, which lives in settings_dir/deep/.
+    r = spot(os.path.join("layouts", "sim", "run.py"), "steps")
+    assert r.get("fatal") is None, r.get("fatal")
+    assert r["return"] == "1.5"
+
+
+def test_module_outside_the_workspace_needs_extra_paths():
+    sample = os.path.join("layouts", "sim", "uses_outside.py")
+    r = spot(sample, "val")
+    first = r["fatal"].splitlines()[0]
+    assert first == "Importing uses_outside.py failed: ModuleNotFoundError: No module named 'outside_only_mod'"
+    assert "spotrun.extraPaths" in r["fatal"]
+    outside = os.path.join(os.path.dirname(SAMPLES), "libs", "outside_dir")
+    r = spot(sample, "val", extra_paths=[outside])
+    assert r.get("fatal") is None, r.get("fatal")
+    assert r["return"] == "7"
+    r = spot(sample, "val", extra_paths=[os.path.relpath(outside, SAMPLES)])
+    assert r["return"] == "7", "paths relative to the workspace folder work too"

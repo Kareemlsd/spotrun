@@ -79,6 +79,8 @@ The function is imported from its file before it can run, so anything that goes 
 - **The file does real work on import**, such as reading a config file, parsing command-line arguments or connecting to something. That code has to succeed first. A missing required environment variable is given an invented value.
 - **A circular import** that only works when the file is reached through another module.
 
+- **One of your own modules is not found.** A module anywhere inside the workspace folder is located and its folder added to the import path automatically. For code outside the workspace, list the folder in `spotrun.extraPaths`. `python.analysis.extraPaths` and `PYTHONPATH` from the workspace `.env` file are used as well.
+
 Layouts that are handled automatically: regular packages, packages without `__init__.py` that use relative imports, a `src/` folder, and source roots below the workspace folder (a file in `backend/app/` that says `from app.x import y`).
 
 ## Limits you should know
@@ -98,6 +100,7 @@ Layouts that are handled automatically: regular packages, packages without `__in
 | `spotrun.useLanguageModel` | `true` | Use a model for inputs and fake values |
 | `spotrun.model` | `""` | Model family, id or name. Empty picks the smallest fast model, Copilot first. Set it from the status bar |
 | `spotrun.pythonPath` | `""` | Interpreter. Empty uses the Python extension's selection |
+| `spotrun.extraPaths` | `[]` | Extra import folders, for your own code outside the workspace |
 | `spotrun.scope` | `workspace` | What is recorded for stepping into: `workspace`, `file` or `function` |
 | `spotrun.startAt` | `first` | Start the replay on the first line or at the end |
 | `spotrun.timeoutSeconds` | `20` | Model wait time excluded |
