@@ -50,6 +50,7 @@ export function absorb(data: FunctionData, result: RunResult): { data: FunctionD
     imports: [...(data.imports ?? [])],
     notes: data.notes,
     lookups: data.lookups ? [...data.lookups] : undefined,
+    cases: data.cases,
   };
   if (result.fatal) {
     return { data: next, retry: false };

@@ -1,4 +1,4 @@
-import { NeedArgs, NeedValue } from "./types";
+import { EdgeCase, NeedArgs, NeedValue } from "./types";
 
 const HELPERS = "datetime, date, timedelta, timezone, Decimal, Path, UUID, math, json, re, np (numpy), pd (pandas)";
 
@@ -279,4 +279,81 @@ export function buildContext(text: string, functionSource: string, signature: st
   out.push("", "# ... (rest of the file omitted) ...", "", functionSource);
   const joined = out.join("\n");
   return joined.length > limit * 2 ? joined.slice(0, limit * 2) : joined;
+}
+
+export interface CasesPromptInput {
+  relativePath: string;
+  qualname: string;
+  context: string;
+  functionSource: string;
+  max: number;
+  notes?: string;
+}
+
+export function buildCasesPrompt(input: CasesPromptInput): string {
+  return [
+    "You design a small set of input cases for one Python function so that a developer can step through each and see how the function behaves.",
+    "",
+    `File: ${input.relativePath}`,
+    "```python",
+    input.context,
+    "```",
+    "",
+    `Function under test: \`${input.qualname}\``,
+    "```python",
+    input.functionSource,
+    "```",
+    "",
+    ...(input.notes ? ["What is known about this codebase's data, from reading it:", input.notes, ""] : []),
+    `Give at most ${input.max} cases. Start with the typical case, then the edge cases this particular code can tell apart: each branch and early return, empty and single-element collections, boundary values of its comparisons, None or a missing key where the code allows or forgets it, values that make it raise, and external dependencies that fail or return nothing. Every case must make the function behave differently from the others. Fewer good cases are better than padding up to the limit.`,
+    "",
+    "Reply with one JSON object and nothing else:",
+    '{"cases": [{"title": "<2 to 5 words>", "args": {"<parameter name>": "<python expression>", ...}, "scenario": "<optional, one sentence>"}, ...]}',
+    "",
+    "Rules:",
+    "- title: short and specific, naming what is special about the case, such as \"Empty price list\" or \"API returns 404\". No numbering.",
+    `- args: every required parameter, each value a single Python expression written as a JSON string and evaluated inside the module, so its own names can be used. Also available: ${HELPERS}.`,
+    "- For a parameter that is a connection, session, client, open file or similar, use the bare name FAKE.",
+    "- scenario: only when the case depends on what a fake or an external call returns. Say it in one sentence, for example \"the HTTP request answers 404\" or \"the query returns no rows\". It is used to invent those values.",
+    "- For a method, leave out self.",
+    "- No imports, no statements, no comments, no markdown.",
+  ].join("\n");
+}
+
+export function parseCasesReply(text: string, max: number): EdgeCase[] {
+  const parsed = extractJson(text) as { cases?: unknown } | undefined;
+  if (!parsed || !Array.isArray(parsed.cases)) {
+    return [];
+  }
+  const cases: EdgeCase[] = [];
+  const seen = new Set<string>();
+  for (const entry of parsed.cases) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const raw = entry as Record<string, unknown>;
+    const args: Record<string, string> = {};
+    if (raw.args && typeof raw.args === "object" && !Array.isArray(raw.args)) {
+      for (const [name, value] of Object.entries(raw.args as Record<string, unknown>)) {
+        const expr = asExpression(value);
+        if (expr !== undefined && name !== "self") {
+          args[name] = expr;
+        }
+      }
+    } else if (raw.args !== undefined) {
+      continue;
+    }
+    let title = typeof raw.title === "string" ? raw.title.replace(/\s+/g, " ").trim() : "";
+    title = title.replace(/^\d+[.):]\s*/, "").slice(0, 60) || `Case ${cases.length + 1}`;
+    while (seen.has(title.toLowerCase())) {
+      title += " (2)";
+    }
+    seen.add(title.toLowerCase());
+    const scenario = typeof raw.scenario === "string" && raw.scenario.trim() ? raw.scenario.trim().slice(0, 300) : undefined;
+    cases.push({ title, args, scenario });
+    if (cases.length >= max) {
+      break;
+    }
+  }
+  return cases;
 }

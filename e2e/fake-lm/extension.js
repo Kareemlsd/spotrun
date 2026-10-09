@@ -4,6 +4,26 @@ const vscode = require("vscode");
 const fs = require("fs");
 
 function answer(prompt) {
+  if (prompt.includes("You design a small set of input cases")) {
+    if (prompt.includes("Function under test: `total`")) {
+      return JSON.stringify({
+        cases: [
+          { title: "Typical basket", args: { prices: "[10.0, 20.0]", tax: "0.5" } },
+          { title: "Empty price list", args: { prices: "[]" } },
+          { title: "Text instead of number", args: { prices: "['a', 2.0]" } },
+        ],
+      });
+    }
+    if (prompt.includes("Function under test: `fetch_prices`")) {
+      return JSON.stringify({
+        cases: [
+          { title: "Items above the minimum", args: { base_url: "'https://shop.test'", min_price: "10" } },
+          { title: "API answers 404", args: { base_url: "'https://shop.test'" }, scenario: "the API answers 404" },
+        ],
+      });
+    }
+    return '{"cases": []}';
+  }
   if (prompt.includes("DIG DEEP IS ON") && prompt.includes("Function to run: `settle`")) {
     if (!prompt.includes("# deep_caller.py:")) {
       return '{"action": "usages", "name": "settle"}';

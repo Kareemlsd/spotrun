@@ -18,6 +18,7 @@ Stepping is a replay of the recording, so it is instant and works backwards.
 | `F11` | Step into (functions in your workspace are recorded too) |
 | `Shift+F11` | Step out |
 | `Shift+F10` | Step back |
+| `Ctrl+Alt+]` / `Ctrl+Alt+[` | Next / previous edge case |
 | `Esc` | Leave the replay |
 
 The keys are only bound while a replay is showing and no debug session is active. Editing the file ends the replay.
@@ -31,6 +32,12 @@ The model receives the file (or, for large files, its imports, the classes the s
 Generated arguments are remembered per function and reused until the signature changes, so a second run makes no model request.
 
 Without a model (no Copilot, consent declined, `spotrun.useLanguageModel` off) the runtime falls back to values derived from type hints and parameter names, and to fakes for everything else. The tool stays usable, the data is just less realistic.
+
+### Edge cases
+
+Click **Edge cases** above a function that has been run, or use the command **Spot Run: Edge Cases**. The model reads the function and proposes the cases this code treats differently: the typical one, then empty inputs, boundary values, error paths and failing dependencies, ten at most by default (`spotrun.edgeCases.max`). Each case gets a short title and is run once, so the list that opens shows for every case whether it returned or raised and with what.
+
+Pick a case to step through it like any other run. `Ctrl+Alt+]` and `Ctrl+Alt+[` move to the next and previous case, and the Spot Run panel lists them under **Edge cases** for one-click switching. Finding the cases is one model request; they are remembered for the function until its signature changes, so opening the list again is free. A case can carry a one-sentence scenario such as "the API answers 404", which steers the fake values of that case.
 
 ### Dig deep
 
@@ -105,6 +112,7 @@ Layouts that are handled automatically: regular packages, packages without `__in
 | `spotrun.startAt` | `first` | Start the replay on the first line or at the end |
 | `spotrun.timeoutSeconds` | `20` | Model wait time excluded |
 | `spotrun.maxModelCalls` | `30` | Per run, for fake values |
+| `spotrun.edgeCases.max` | `10` | Most edge cases proposed per function |
 | `spotrun.digDeep.always` | `false` | Read the workspace every time inputs are generated |
 | `spotrun.digDeep.maxLookups` | `8` | Searches and file reads per Dig deep, one model request each |
 | `spotrun.codeLens` | `true` | Show the action above functions |

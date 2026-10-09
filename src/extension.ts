@@ -3,12 +3,12 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { createFsHost, dig } from "./core/dig";
-import { buildArgsPrompt, buildContext, buildValuePrompt, parseArgsReply, parseValueReply } from "./core/prompts";
+import { buildArgsPrompt, buildCasesPrompt, buildContext, buildValuePrompt, parseArgsReply, parseCasesReply, parseValueReply } from "./core/prompts";
 import { findByQualname, functionAt, parsePythonFunctions, PyFunction, signatureOf, sourceOf } from "./core/pythonFunctions";
 import { ReplayModel, truncate } from "./core/replayModel";
 import { Handlers, RunError } from "./core/runtimeProcess";
 import { buildRequest, runWithRetries, RunSpec } from "./core/session";
-import { emptyFunctionData, FunctionData, NeedArgs, NeedValue } from "./core/types";
+import { EdgeCase, emptyFunctionData, FunctionData, NeedArgs, NeedValue, RunResult } from "./core/types";
 import { InputChat } from "./inputChat";
 import { resolvePython } from "./interpreter";
 import { LanguageModel } from "./llm";
@@ -27,6 +27,20 @@ interface Current {
   data: FunctionData;
   model: ReplayModel;
   python: string;
+  /** Index of the edge case being shown, when it is one. */
+  caseIndex?: number;
+}
+
+/** A finished run of an edge case, kept in memory so switching between cases is instant. */
+interface CaseRun {
+  spec: RunSpec;
+  python: string;
+  data: FunctionData;
+  model: ReplayModel;
+}
+
+function outcomeOf(result: RunResult): string {
+  return result.exception ? `${result.exception.type}: ${result.exception.message}` : `→ ${result.return ?? "None"}`;
 }
 
 class Controller implements vscode.Disposable {
@@ -37,6 +51,9 @@ class Controller implements vscode.Disposable {
   private readonly tree: vscode.TreeView<Node>;
   private readonly modelStatus: vscode.StatusBarItem;
   private readonly chat = new InputChat();
+  private readonly caseRuns = new Map<string, CaseRun>();
+  private batch: vscode.CancellationTokenSource | undefined;
+  private chatName = "";
   private readonly lensChanged = new vscode.EventEmitter<void>();
   private readonly disposables: vscode.Disposable[] = [];
   private current: Current | undefined;
@@ -72,6 +89,10 @@ class Controller implements vscode.Disposable {
     register("spotrun.editValue", (node?: Node) => this.editValue(node));
     register("spotrun.unpin", (node?: Node) => this.unpin(node));
     register("spotrun.forget", () => this.forget());
+    register("spotrun.edgeCases", (uri?: vscode.Uri, qualname?: string) => this.edgeCases(uri, qualname));
+    register("spotrun.showEdgeCase", (index: number) => this.guarded(() => this.showCase(index)));
+    register("spotrun.nextEdgeCase", () => this.guarded(() => this.stepCase(1)));
+    register("spotrun.previousEdgeCase", () => this.guarded(() => this.stepCase(-1)));
     register("spotrun.digDeep", (uri?: vscode.Uri, qualname?: string) => this.digDeep(uri, qualname));
     register("spotrun.describe", (uri?: vscode.Uri, qualname?: string) => this.describe(uri, qualname));
     register("spotrun.submitInstruction", (reply: vscode.CommentReply) => this.submitInstruction(reply));
@@ -181,6 +202,12 @@ class Controller implements vscode.Disposable {
             title: "$(comment) Describe inputs",
             tooltip: "Say in your own words what data the function should be tested with",
             command: "spotrun.describe",
+            arguments: [document.uri, fn.qualname],
+          }),
+          new vscode.CodeLens(range, {
+            title: "$(beaker) Edge cases",
+            tooltip: "Find the cases this function treats differently, run each, and pick one to step through",
+            command: "spotrun.edgeCases",
             arguments: [document.uri, fn.qualname],
           }),
           new vscode.CodeLens(range, {
@@ -360,7 +387,13 @@ class Controller implements vscode.Disposable {
     return `spotrun.fn:${vscode.workspace.asRelativePath(target.uri, true)}::${target.qualname}`;
   }
 
-  private async run(target: Target, regenerate: boolean, patch?: (data: FunctionData) => FunctionData, digDeep = false): Promise<void> {
+  private async run(
+    target: Target,
+    regenerate: boolean,
+    patch?: (data: FunctionData) => FunctionData,
+    digDeep = false,
+    edge?: { index: number; quiet: boolean },
+  ): Promise<void> {
     if (target.uri.scheme !== "file") {
       void vscode.window.showWarningMessage("Spot Run works on files saved to disk.");
       return;
@@ -382,13 +415,31 @@ class Controller implements vscode.Disposable {
     let data = this.context.workspaceState.get<FunctionData>(key) ?? emptyFunctionData(signature);
     data = { ...emptyFunctionData(signature), ...data, pins: { args: { ...data.pins?.args }, fakes: { ...data.pins?.fakes } } };
     if (data.signature !== signature) {
-      data = { ...data, signature, args: null };
+      data = { ...data, signature, args: null, cases: undefined };
     }
     if (regenerate) {
       data = { ...data, args: null, fakes: {} };
     }
     if (patch) {
       data = patch(data);
+    }
+    // An edge case runs with its own inputs and fake values; everything else
+    // about the function (patches, pinned fakes) is shared with the normal run.
+    const stored = data;
+    const edgeCase = edge ? stored.cases?.[edge.index] : undefined;
+    if (edge && !edgeCase) {
+      return;
+    }
+    if (edgeCase) {
+      data = {
+        ...stored,
+        args: edgeCase.args,
+        imports: edgeCase.imports ?? [],
+        fakes: edgeCase.fakes ?? {},
+        instructions: edgeCase.scenario ? [edgeCase.scenario] : [],
+        pins: { args: {}, fakes: stored.pins.fakes },
+        lookups: undefined,
+      };
     }
 
     const file = target.uri.fsPath;
@@ -411,10 +462,13 @@ class Controller implements vscode.Disposable {
     const cancel = new vscode.CancellationTokenSource();
     abort.signal.addEventListener("abort", () => cancel.cancel());
     this.lastTarget = target;
-    this.status.text = `$(loading~spin) Spot Run: ${target.qualname}`;
-    this.status.tooltip = "Running. Use Spot Run: Stop to cancel.";
-    this.status.show();
-    this.log.appendLine(`\n── ${target.qualname} (${vscode.workspace.asRelativePath(target.uri)}) with ${python}`);
+    if (!edge?.quiet) {
+      this.status.text = `$(loading~spin) Spot Run: ${target.qualname}`;
+      this.status.tooltip = "Running. Use Spot Run: Stop to cancel.";
+      this.status.show();
+    }
+    this.chatName = chat?.name ?? "";
+    this.log.appendLine(`\n── ${target.qualname}${edgeCase ? ` · edge case “${edgeCase.title}”` : ""} (${vscode.workspace.asRelativePath(target.uri)}) with ${python}`);
 
     const useDig = digDeep || config.get<boolean>("digDeep.always", false);
     const digSteps = Math.max(1, Math.min(30, config.get<number>("digDeep.maxLookups", 8)));
@@ -437,14 +491,31 @@ class Controller implements vscode.Disposable {
         outcome.data.lookups = handlers.generated.lookups;
         outcome.data.notes = handlers.generated.notes ?? (handlers.generated.lookups ? undefined : outcome.data.notes);
       }
-      await this.context.workspaceState.update(key, outcome.data);
       const result = outcome.result;
+      let shown = outcome.data;
+      if (edgeCase && edge) {
+        const cases = [...(stored.cases ?? [])];
+        cases[edge.index] = {
+          ...edgeCase,
+          fakes: outcome.data.fakes,
+          outcome: result.fatal ? "could not be run" : outcomeOf(result),
+          failed: !!result.fatal || !!result.exception,
+          rejected: (result.args ?? []).some((a) => !!a.error),
+        };
+        await this.context.workspaceState.update(key, { ...stored, patches: outcome.data.patches, eager: outcome.data.eager, cases });
+        shown = { ...outcome.data, cases };
+      } else {
+        await this.context.workspaceState.update(key, outcome.data);
+      }
       for (const problem of result.import_errors ?? []) {
         this.log.appendLine(`   import rejected: ${problem}`);
       }
       this.runCount += 1;
       if (result.fatal) {
         this.log.appendLine(result.fatal);
+        if (edge?.quiet) {
+          return;
+        }
         this.status.hide();
         const first = result.fatal.split("\n").find((l) => l.trim() !== "") ?? "The function could not be started.";
         const choice = await vscode.window.showErrorMessage(`Spot Run: ${first}`, "Show Log");
@@ -464,20 +535,13 @@ class Controller implements vscode.Disposable {
       }
 
       const model = new ReplayModel(result);
-      const failing = model.failingIndex();
-      if (result.exception) {
-        model.goTo(failing ?? model.length);
-      } else {
-        model.goTo(config.get<string>("startAt", "first") === "end" ? model.length : 0);
+      if (edge) {
+        this.caseRuns.set(`${key}#${edge.index}`, { spec, python, data: shown, model });
+        if (edge.quiet) {
+          return;
+        }
       }
-      this.current = { target, key, spec, data: outcome.data, model, python };
-      await this.setContext(true, true);
-      this.view.setModel(model);
-      this.panel.update(model, outcome.data, chat?.name ?? "");
-      this.tree.description = target.qualname;
-      this.lensChanged.fire();
-      await this.view.reveal();
-      this.updateStatus();
+      await this.present(target, key, { spec, python, data: shown, model }, edge?.index);
       if (!this.context.globalState.get<boolean>("spotrun.panelIntroduced")) {
         // The section starts collapsed in the Explorer. Open it once so it is
         // found; after that VS Code remembers how the user left it.
@@ -494,6 +558,9 @@ class Controller implements vscode.Disposable {
           return;
         }
         this.log.appendLine(`${error.message}\n${error.detail}`);
+        if (edge?.quiet) {
+          return;
+        }
         this.status.hide();
         const choice = await vscode.window.showErrorMessage(`Spot Run: ${error.message}`, "Show Log");
         if (choice) {
@@ -506,11 +573,204 @@ class Controller implements vscode.Disposable {
       cancel.dispose();
       if (this.running === abort) {
         this.running = undefined;
-        if (!this.current) {
+        if (!this.current && !edge?.quiet) {
           this.status.hide();
         }
       }
     }
+  }
+
+  /** Puts a finished run on screen: replay position, inline values, panel, status. */
+  private async present(target: Target, key: string, run: CaseRun, caseIndex?: number): Promise<void> {
+    const config = vscode.workspace.getConfiguration("spotrun", target.uri);
+    const model = run.model;
+    if (model.result.exception) {
+      model.goTo(model.failingIndex() ?? model.length);
+    } else {
+      model.goTo(config.get<string>("startAt", "first") === "end" ? model.length : 0);
+    }
+    this.current = { target, key, spec: run.spec, data: run.data, model, python: run.python, caseIndex };
+    await this.setContext(true, true);
+    this.view.setModel(model);
+    this.panel.update(model, run.data, this.chatName, caseIndex);
+    this.tree.description = caseIndex === undefined ? target.qualname : `${target.qualname} · ${run.data.cases?.[caseIndex]?.title ?? ""}`;
+    this.lensChanged.fire();
+    await this.view.reveal();
+    this.updateStatus();
+  }
+
+  // ------------------------------------------------------------ edge cases
+
+  private casesOf(target: Target): EdgeCase[] {
+    return this.context.workspaceState.get<FunctionData>(this.storeKey(target))?.cases ?? [];
+  }
+
+  private async edgeCases(uri: vscode.Uri | undefined, qualname: string | undefined): Promise<void> {
+    const explicit = uri instanceof vscode.Uri && typeof qualname === "string";
+    const target = this.targetAtCursor(uri, qualname) ?? (explicit ? undefined : (this.current?.target ?? this.lastTarget));
+    if (!target) {
+      void vscode.window.showInformationMessage("Spot Run: put the cursor inside a Python function first.");
+      return;
+    }
+    await this.guarded(async () => {
+      const document = await vscode.workspace.openTextDocument(target.uri);
+      const fn = findByQualname(parsePythonFunctions(document.getText()), target.qualname);
+      const stored = this.context.workspaceState.get<FunctionData>(this.storeKey(target));
+      const fresh = fn && stored?.cases?.length && stored.signature === signatureOf(document.getText(), fn);
+      if (fresh) {
+        await this.pickCase(target);
+      } else {
+        await this.findCases(target);
+      }
+    });
+  }
+
+  /** Asks the model for the cases, runs each once, then offers the list. */
+  private async findCases(target: Target): Promise<void> {
+    if (!(await this.llm.pick())) {
+      void vscode.window.showWarningMessage("Spot Run: Edge cases need a language model, and none is available.");
+      return;
+    }
+    const document = await vscode.workspace.openTextDocument(target.uri);
+    const config = vscode.workspace.getConfiguration("spotrun", target.uri);
+    if (document.isDirty && config.get<boolean>("saveBeforeRun", true)) {
+      await document.save();
+    }
+    const text = document.getText();
+    const fn = findByQualname(parsePythonFunctions(text), target.qualname);
+    if (!fn) {
+      return;
+    }
+    const signature = signatureOf(text, fn);
+    const functionSource = sourceOf(text, fn);
+    const key = this.storeKey(target);
+    const max = Math.max(1, Math.min(25, config.get<number>("edgeCases.max", 10)));
+    const stored = { ...emptyFunctionData(signature), ...(this.context.workspaceState.get<FunctionData>(key) ?? {}) };
+
+    this.batch?.cancel();
+    const batch = new vscode.CancellationTokenSource();
+    this.batch = batch;
+    this.lastTarget = target;
+    this.status.text = `$(loading~spin) Spot Run: ${target.qualname} · finding edge cases`;
+    this.status.tooltip = "Use Spot Run: Stop to cancel.";
+    this.status.show();
+    try {
+      const reply = await this.llm.ask(
+        buildCasesPrompt({
+          relativePath: vscode.workspace.asRelativePath(target.uri),
+          qualname: target.qualname,
+          context: buildContext(text, functionSource, signature, fn.className),
+          functionSource,
+          max,
+          notes: stored.notes,
+        }),
+        batch.token,
+        60000,
+      );
+      if (batch.token.isCancellationRequested) {
+        return;
+      }
+      const cases = reply === undefined ? [] : parseCasesReply(reply, max);
+      if (cases.length === 0) {
+        this.log.appendLine(`   edge cases: the model's reply was not usable: ${truncate(reply ?? "(no reply)", 300)}`);
+        this.updateStatus();
+        void vscode.window.showWarningMessage("Spot Run: the model did not return usable edge cases. See Spot Run: Show Log.");
+        return;
+      }
+      for (const stale of [...this.caseRuns.keys()].filter((k) => k.startsWith(`${key}#`))) {
+        this.caseRuns.delete(stale);
+      }
+      await this.context.workspaceState.update(key, { ...stored, signature, cases });
+      this.log.appendLine(`\n── ${target.qualname}: ${cases.length} edge case${cases.length === 1 ? "" : "s"}: ${cases.map((c) => c.title).join(" · ")}`);
+      for (let index = 0; index < cases.length; index++) {
+        if (batch.token.isCancellationRequested) {
+          return;
+        }
+        this.status.text = `$(loading~spin) Spot Run: ${target.qualname} · case ${index + 1}/${cases.length} · ${truncate(cases[index].title, 40)}`;
+        await this.run(target, false, undefined, false, { index, quiet: true });
+      }
+      if (batch.token.isCancellationRequested) {
+        return;
+      }
+      this.lensChanged.fire();
+      this.updateStatus();
+      await this.pickCase(target);
+    } finally {
+      if (this.batch === batch) {
+        this.batch = undefined;
+      }
+      batch.dispose();
+      if (!this.current) {
+        this.status.hide();
+      }
+    }
+  }
+
+  private async pickCase(target: Target): Promise<void> {
+    const cases = this.casesOf(target);
+    type Item = vscode.QuickPickItem & { action?: "new" | "normal"; index?: number };
+    const shownIndex = this.current && this.current.target.qualname === target.qualname ? this.current.caseIndex : undefined;
+    const items: Item[] = cases.map((c, index) => ({
+      label: `$(${c.outcome === undefined ? "circle-outline" : c.failed ? "error" : "pass"}) ${c.title}`,
+      description: `${index === shownIndex ? "showing · " : ""}${truncate(c.outcome ?? "not run yet", 70)}`,
+      detail: truncate(
+        Object.entries(c.args)
+          .map(([name, expr]) => `${name} = ${expr}`)
+          .join(", ") + (c.scenario ? `  ·  ${c.scenario}` : "") + (c.rejected ? "  ·  some inputs were replaced by sample values" : ""),
+        160,
+      ),
+      index,
+    }));
+    items.push(
+      { label: "", kind: vscode.QuickPickItemKind.Separator },
+      { label: "$(play) Normal run", description: "the ordinary inputs for this function", action: "normal" },
+      { label: "$(refresh) Find edge cases again", description: "one model request, then each case is run", action: "new" },
+    );
+    const failed = cases.filter((c) => c.failed).length;
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `Edge cases for ${target.qualname}: ${cases.length - failed} returned, ${failed} raised`,
+      placeHolder: "Pick a case to step through it",
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked) {
+      return;
+    }
+    if (picked.action === "new") {
+      await this.findCases(target);
+    } else if (picked.action === "normal") {
+      await this.run(target, false);
+    } else if (picked.index !== undefined) {
+      await this.showCase(picked.index, target);
+    }
+  }
+
+  private async showCase(index: number, target: Target | undefined = this.current?.target ?? this.lastTarget): Promise<void> {
+    if (!target || !this.casesOf(target)[index]) {
+      return;
+    }
+    const key = this.storeKey(target);
+    const run = this.caseRuns.get(`${key}#${index}`);
+    if (run) {
+      // Other cases may have run since: show the latest outcomes in the panel.
+      await this.present(target, key, { ...run, data: { ...run.data, cases: this.casesOf(target) } }, index);
+    } else {
+      await this.run(target, false, undefined, false, { index, quiet: false });
+    }
+  }
+
+  private async stepCase(delta: number): Promise<void> {
+    const target = this.current?.target ?? this.lastTarget;
+    if (!target) {
+      return;
+    }
+    const count = this.casesOf(target).length;
+    if (count === 0) {
+      await this.findCases(target);
+      return;
+    }
+    const from = this.current?.caseIndex ?? (delta > 0 ? -1 : 0);
+    await this.showCase((((from + delta) % count) + count) % count, target);
   }
 
   /**
@@ -732,7 +992,8 @@ class Controller implements vscode.Disposable {
     const model = current.model;
     const position = model.atEnd ? "end" : `${model.index + 1}/${model.length}`;
     const failed = !!model.result.exception;
-    this.status.text = `$(${failed ? "error" : "debug-alt-small"}) ${current.target.qualname} · ${position} · ${truncate(model.outcome(), 60)}`;
+    const caseTitle = current.caseIndex === undefined ? undefined : current.data.cases?.[current.caseIndex]?.title;
+    this.status.text = `$(${failed ? "error" : "debug-alt-small"}) ${current.target.qualname}${caseTitle ? ` · “${truncate(caseTitle, 30)}”` : ""} · ${position} · ${truncate(model.outcome(), 60)}`;
     this.status.tooltip = new vscode.MarkdownString(
       "**Spot Run** replay\n\nF10 step over · F11 step into · Shift+F11 step out · Shift+F10 step back · Esc stop\n\nClick to show the Spot Run section in the Explorer.",
     );
@@ -751,6 +1012,8 @@ class Controller implements vscode.Disposable {
   }
 
   private clearReplay(): void {
+    // Recordings no longer match the text or are no longer wanted.
+    this.caseRuns.clear();
     this.current = undefined;
     this.view.setModel(undefined);
     this.panel.update(undefined);
@@ -760,6 +1023,7 @@ class Controller implements vscode.Disposable {
   }
 
   private stop(): void {
+    this.batch?.cancel();
     this.running?.abort();
     this.running = undefined;
     this.clearReplay();

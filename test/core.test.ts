@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { test } from "node:test";
-import { buildArgsPrompt, buildContext, buildValuePrompt, extractJson, parseArgsReply, parseValueReply, toPythonLiteral } from "../src/core/prompts";
+import { buildArgsPrompt, buildCasesPrompt, buildContext, buildValuePrompt, extractJson, parseArgsReply, parseCasesReply, parseValueReply, toPythonLiteral } from "../src/core/prompts";
 import { findByQualname, functionAt, parsePythonFunctions, signatureOf, sourceOf } from "../src/core/pythonFunctions";
 import { formatWrites, ReplayModel } from "../src/core/replayModel";
 import { createFsHost, dig, parseDigReply, runLookup } from "../src/core/dig";
@@ -512,4 +512,51 @@ test("runtime: dug-up arguments with imports run and are remembered", async () =
   assert.deepEqual(first.data.imports, ["from deep_models import Ledger, Policy"]);
   const second = await runWithRetries(spec("deep.py", "settle", true), first.data, { ...handlers, needArgs: async () => assert.fail("asked again") }, options);
   assert.equal(second.result.return, "(90.0, [])");
+});
+
+// --------------------------------------------------------------- edge cases
+
+test("edge cases: the prompt states the limit and the reply is cleaned up", () => {
+  const prompt = buildCasesPrompt({ relativePath: "m.py", qualname: "total", context: "CTX", functionSource: "def total(prices, tax=0.2): ...", max: 4, notes: "prices are floats" });
+  assert.match(prompt, /Give at most 4 cases/);
+  assert.match(prompt, /def total\(prices, tax=0\.2\)/);
+  assert.match(prompt, /prices are floats/);
+
+  const reply = `Here:
+{"cases": [
+  {"title": "1. Typical  basket", "args": {"prices": "[1.0, 2.0]", "tax": 0.2}},
+  {"title": "Empty price list", "args": {"prices": []}, "scenario": " nothing external "},
+  {"title": "empty price list", "args": {"prices": "[]"}},
+  {"title": "", "args": {"self": "X()", "prices": "None"}},
+  "junk",
+  {"title": "No args key"},
+  {"title": "Bad args", "args": "oops"},
+  {"title": "Over the limit", "args": {}}
+]}`;
+  const cases = parseCasesReply(reply, 5);
+  assert.deepEqual(cases, [
+    { title: "Typical basket", args: { prices: "[1.0, 2.0]", tax: "0.2" }, scenario: undefined },
+    { title: "Empty price list", args: { prices: "[]" }, scenario: "nothing external" },
+    { title: "empty price list (2)", args: { prices: "[]" }, scenario: undefined },
+    { title: "Case 4", args: { prices: "None" }, scenario: undefined },
+    { title: "No args key", args: {}, scenario: undefined },
+  ]);
+  assert.deepEqual(parseCasesReply("nothing", 5), []);
+  assert.deepEqual(parseCasesReply('{"cases": "x"}', 5), []);
+});
+
+test("runtime: each edge case runs with its own inputs and no argument request", async () => {
+  const cases = [
+    { title: "Typical", args: { prices: "[10.0, 20.0]", tax: "0.5" } },
+    { title: "Empty", args: { prices: "[]" } },
+    { title: "Text", args: { prices: "['a']" } },
+  ];
+  const never: Handlers = { needArgs: async () => assert.fail("arguments were requested"), needValue: async () => undefined };
+  const outcomes: string[] = [];
+  for (const edge of cases) {
+    const data = { ...emptyFunctionData(""), args: edge.args };
+    const { result } = await runWithRetries(spec("pure.py", "total", true), data, never, options);
+    outcomes.push(result.exception ? result.exception.type : (result.return ?? ""));
+  }
+  assert.deepEqual(outcomes, ["45.0", "0.0", "TypeError"]);
 });

@@ -161,6 +161,22 @@ export interface StartRequest {
   trace?: boolean;
 }
 
+/** One named set of inputs produced by the edge-case search. */
+export interface EdgeCase {
+  title: string;
+  args: Record<string, string>;
+  imports?: string[];
+  /** What the external dependencies should do in this case; steers fake values. */
+  scenario?: string;
+  /** Fake values the model invented for this case, cached like any others. */
+  fakes?: Record<string, string>;
+  /** One-line result of the last run of this case. */
+  outcome?: string;
+  failed?: boolean;
+  /** Some generated argument was rejected and replaced by a sample value. */
+  rejected?: boolean;
+}
+
 /** Everything remembered about one function between runs. */
 export interface FunctionData {
   signature: string;
@@ -177,6 +193,8 @@ export interface FunctionData {
   notes?: string;
   /** What dig deep looked up to produce the current arguments. */
   lookups?: string[];
+  /** Edge cases found for this function. */
+  cases?: EdgeCase[];
   /** Arguments of the run a new instruction refines. Not persisted. */
   previousArgs?: Record<string, string> | null;
 }

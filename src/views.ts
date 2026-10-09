@@ -6,6 +6,7 @@ import { ArgInfo, FunctionData, Resolution } from "./core/types";
 export type Node =
   | { kind: "section"; id: string; label: string; description?: string; children: Node[]; expanded: boolean }
   | { kind: "outcome"; label: string; failed: boolean; tooltip: string }
+  | { kind: "case"; index: number; title: string; outcome: string; failed: boolean; current: boolean; detail: string }
   | { kind: "arg"; arg: ArgInfo; pinned: boolean }
   | { kind: "fake"; resolution: Resolution; pinned: boolean; pinKey: string }
   | { kind: "info"; label: string; description?: string; tooltip?: string; icon?: string; file?: string | null; line?: number }
@@ -34,7 +35,10 @@ export class PanelProvider implements vscode.TreeDataProvider<Node> {
   private roots: Node[] = [];
   private readonly parents = new Map<Node, Node>();
 
-  update(model: ReplayModel | undefined, data?: FunctionData, modelName?: string): void {
+  private caseIndex: number | undefined;
+
+  update(model: ReplayModel | undefined, data?: FunctionData, modelName?: string, caseIndex?: number): void {
+    this.caseIndex = caseIndex;
     this.model = model;
     this.data = data ?? this.data;
     this.modelName = modelName ?? this.modelName;
@@ -86,6 +90,30 @@ export class PanelProvider implements vscode.TreeDataProvider<Node> {
         ? `${result.exception!.type}: ${result.exception!.message}\n\n${result.exception!.frames.map((f) => `${path.basename(f.file)}:${f.line} in ${f.name}\n    ${f.text}`).join("\n")}`
         : `${result.qualname} returned\n${result.return ?? "None"}`,
     });
+
+    const cases = this.data?.cases ?? [];
+    if (cases.length > 0) {
+      const raised = cases.filter((c) => c.failed).length;
+      nodes.push({
+        kind: "section",
+        id: "cases",
+        label: "Edge cases",
+        description: `${cases.length - raised} returned, ${raised} raised`,
+        expanded: true,
+        children: cases.map((c, index) => ({
+          kind: "case" as const,
+          index,
+          title: c.title,
+          outcome: c.outcome ?? "not run yet",
+          failed: !!c.failed,
+          current: index === this.caseIndex,
+          detail:
+            Object.entries(c.args)
+              .map(([name, expr]) => `${name} = ${expr}`)
+              .join("\n") + (c.scenario ? `\n\n${c.scenario}` : ""),
+        })),
+      });
+    }
 
     nodes.push({
       kind: "section",
@@ -220,6 +248,20 @@ export class PanelProvider implements vscode.TreeDataProvider<Node> {
         const item = new vscode.TreeItem(node.label);
         item.iconPath = new vscode.ThemeIcon(node.failed ? "error" : "pass", new vscode.ThemeColor(node.failed ? "testing.iconFailed" : "testing.iconPassed"));
         item.tooltip = node.tooltip;
+        return item;
+      }
+      case "case": {
+        const item = new vscode.TreeItem(node.title);
+        item.description = truncate(node.outcome, 80);
+        item.iconPath = node.current
+          ? new vscode.ThemeIcon("debug-stackframe-focused")
+          : new vscode.ThemeIcon(node.failed ? "error" : "pass", new vscode.ThemeColor(node.failed ? "testing.iconFailed" : "testing.iconPassed"));
+        const tooltip = new vscode.MarkdownString();
+        tooltip.appendMarkdown(`**${node.title}**${node.current ? " (showing)" : ""}\n\n`);
+        tooltip.appendCodeblock(node.detail || "(no arguments)", "python");
+        tooltip.appendMarkdown(node.outcome);
+        item.tooltip = tooltip;
+        item.command = { command: "spotrun.showEdgeCase", title: "Step Through This Case", arguments: [node.index] };
         return item;
       }
       case "arg": {

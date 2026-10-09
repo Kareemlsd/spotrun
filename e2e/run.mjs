@@ -331,6 +331,56 @@ try {
     await open("pure.py", 21);
   }
 
+  // ---- 8e. edge cases
+  if (withModel) {
+    const promptCount = () => fs.readFileSync(lmLog, "utf8").split("=== PROMPT ===").length;
+    const pickerText = async () => (await page.locator(".quick-input-widget .monaco-list-row").allTextContents()).join(" | ");
+    await open("pure.py", 21);
+    let before = promptCount();
+    await palette("Spot Run: Edge Cases");
+    await page.waitForFunction(() => [...document.querySelectorAll(".quick-input-widget .monaco-list-row")].some((r) => r.textContent.includes("Text instead of number")), null, { timeout: 60000 });
+    let listed = await pickerText();
+    check("edge cases are listed with titles and outcomes", listed.includes("Typical basket") && listed.includes("→ 45.0") && listed.includes("Empty price list") && listed.includes("→ 0.0") && listed.includes("TypeError"), listed.slice(0, 500));
+    check("finding the cases took one model request", promptCount() - before === 1, String(promptCount() - before));
+    await shot("20-edge-case-picker");
+    await page.keyboard.type("Empty", { delay: 5 });
+    await page.waitForTimeout(400);
+    await page.keyboard.press("Enter");
+    status = await waitForReplay("total");
+    check("picking a case replays it", status.includes("“Empty price list”") && /1\/\d+ · → 0\.0/.test(status), status);
+    await page.keyboard.press("Control+1");
+    await page.keyboard.press("Control+Alt+]");
+    await page.waitForFunction(() => [...document.querySelectorAll(".statusbar-item")].some((e) => e.textContent.includes("Text instead of number")), null, { timeout: 20000 });
+    status = await statusText();
+    check("the next-case key moves to the following case, at its failing line", status.includes("TypeError"), status);
+    await page.locator(".statusbar-item", { hasText: "total" }).first().click();
+    await page.waitForTimeout(1200);
+    await page.locator(".pane-header", { hasText: "workspace" }).first().click();
+    await page.waitForTimeout(700);
+    let casePanel = (await page.locator(".pane", { hasText: "Spot Run" }).allTextContents()).join(" ");
+    check("the panel lists the cases", casePanel.includes("Edge cases") && casePanel.includes("2 returned, 1 raised") && casePanel.includes("Typical basket"), casePanel.slice(0, 400));
+    await shot("21-edge-case-panel");
+    await page.locator(".pane", { hasText: "Spot Run" }).getByText("Typical basket", { exact: true }).first().click();
+    await page.waitForFunction(() => [...document.querySelectorAll(".statusbar-item")].some((e) => e.textContent.includes("“Typical basket”")), null, { timeout: 20000 });
+    check("clicking a case in the panel shows it", (await statusText()).includes("→ 45.0"), await statusText());
+    await page.locator(".pane-header", { hasText: "workspace" }).first().click();
+    await page.waitForTimeout(400);
+    before = promptCount();
+    await page.keyboard.press("Control+1");
+    await palette("Spot Run: Edge Cases");
+    await page.waitForFunction(() => [...document.querySelectorAll(".quick-input-widget .monaco-list-row")].some((r) => r.textContent.includes("Find edge cases again")), null, { timeout: 20000 });
+    check("opening the list again costs no model request", promptCount() === before);
+    await page.keyboard.press("Escape");
+
+    await open("effects.py", 12);
+    await palette("Spot Run: Edge Cases");
+    await page.waitForFunction(() => [...document.querySelectorAll(".quick-input-widget .monaco-list-row")].some((r) => r.textContent.includes("API answers 404")), null, { timeout: 60000 });
+    listed = await pickerText();
+    check("a case's scenario steers the fake values", /Items above the minimum[^|]*\['desk', 'lamp'\]/.test(listed) && /API answers 404[^|]*→ \[\]/.test(listed), listed.slice(0, 500));
+    await page.keyboard.press("Escape");
+    await open("pure.py", 21);
+  }
+
   // ---- 8d. dig deep
   if (withModel) {
     await open("deep.py", 2);

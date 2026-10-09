@@ -2,7 +2,7 @@
   "name": "spotrun",
   "displayName": "Spot Run",
   "description": "Run any Python function on the spot. A language model invents the inputs, external dependencies become lazy fakes, and you step through the recorded run in the editor.",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "publisher": "kareemlsd",
   "private": true,
   "repository": {
@@ -141,6 +141,27 @@
         "title": "Dig Deep: Read the Codebase for Better Inputs",
         "category": "Spot Run",
         "icon": "$(telescope)"
+      },
+      {
+        "command": "spotrun.edgeCases",
+        "title": "Edge Cases",
+        "category": "Spot Run",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "spotrun.nextEdgeCase",
+        "title": "Next Edge Case",
+        "category": "Spot Run"
+      },
+      {
+        "command": "spotrun.previousEdgeCase",
+        "title": "Previous Edge Case",
+        "category": "Spot Run"
+      },
+      {
+        "command": "spotrun.showEdgeCase",
+        "title": "Step Through Edge Case",
+        "category": "Spot Run"
       }
     ],
     "keybindings": [
@@ -180,6 +201,18 @@
         "command": "spotrun.stop",
         "key": "escape",
         "when": "spotrun.replayActive && editorTextFocus && !inDebugMode && !suggestWidgetVisible && !findWidgetVisible && !parameterHintsVisible && !inSnippetMode && !editorHasSelection && !editorHasMultipleSelections && !renameInputVisible && !inlineSuggestionVisible && !notificationToastsVisible && !codeActionMenuVisible"
+      },
+      {
+        "command": "spotrun.nextEdgeCase",
+        "key": "ctrl+alt+]",
+        "mac": "cmd+alt+]",
+        "when": "spotrun.replayActive && !inDebugMode"
+      },
+      {
+        "command": "spotrun.previousEdgeCase",
+        "key": "ctrl+alt+[",
+        "mac": "cmd+alt+[",
+        "when": "spotrun.replayActive && !inDebugMode"
       }
     ],
     "menus": {
@@ -231,6 +264,10 @@
         {
           "command": "spotrun.clearInstruction",
           "when": "false"
+        },
+        {
+          "command": "spotrun.showEdgeCase",
+          "when": "false"
         }
       ],
       "editor/context": [
@@ -248,6 +285,11 @@
           "command": "spotrun.digDeep",
           "when": "editorLangId == python",
           "group": "navigation@92"
+        },
+        {
+          "command": "spotrun.edgeCases",
+          "when": "editorLangId == python",
+          "group": "navigation@93"
         }
       ],
       "editor/title": [
@@ -283,6 +325,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "spotrun.edgeCases",
+          "when": "view == spotrun.panel && spotrun.hasResult",
+          "group": "navigation@0"
+        },
         {
           "command": "spotrun.regenerate",
           "when": "view == spotrun.panel && spotrun.hasResult",
@@ -424,6 +471,13 @@
           },
           "default": [],
           "markdownDescription": "Folders to add to the import path when a function is run, absolute or relative to the workspace folder. Needed only for your own modules that live outside the workspace: modules anywhere inside it are found automatically, and `python.analysis.extraPaths` and `PYTHONPATH` from the workspace `.env` file are honoured too."
+        },
+        "spotrun.edgeCases.max": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Upper limit on the number of edge cases the model may propose for a function. Finding them is one model request; each case is then run once."
         }
       }
     },
